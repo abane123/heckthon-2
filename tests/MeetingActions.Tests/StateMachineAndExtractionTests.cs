@@ -52,15 +52,15 @@ public sealed class StateMachineAndExtractionTests
         var result = await extractor.ExtractAsync(
             "PRIYA, can you sort it before the release?", new DateTime(2026, 11, 17), ["Priya"]);
 
-        result.Should().ContainSingle();
-        result[0].OwnerName.Should().Be("Priya");
-        result[0].NeedsInput.Should().Contain("due date");
-        result[0].Title.Should().Be("Sort it before the release");
+        result.Items.Should().ContainSingle();
+        result.Items[0].OwnerName.Should().Be("Priya");
+        result.Items[0].NeedsInput.Should().Contain("due date");
+        result.Items[0].Title.Should().Be("Sort it before the release");
 
         var contextualResult = await extractor.ExtractAsync(
             "Priya, can you sort it before the release? The retry behavior is also a little unclear.",
             new DateTime(2026, 11, 17), ["Priya"]);
-        contextualResult.Single().Title.Should().Be("Sort the retry behavior before the release");
+        contextualResult.Items.Single().Title.Should().Be("Sort the retry behavior before the release");
     }
 
     /// <summary>Resolves the end-of-next-week phrase to the following Friday.</summary>
@@ -72,8 +72,22 @@ public sealed class StateMachineAndExtractionTests
         var result = await extractor.ExtractAsync(
             "Priya, can you finish the report by end of next week?", new DateTime(2026, 11, 17), ["Priya"]);
 
-        result.Single().DueDate.Should().Be(new DateTime(2026, 11, 27));
-        result.Single().DueDateText.Should().Be("by end of next week");
+        result.Items.Single().DueDate.Should().Be(new DateTime(2026, 11, 27));
+        result.Items.Single().DueDateText.Should().Be("by end of next week");
+    }
+
+    /// <summary>Preserves the "by" preposition when extracting an explicit due-date phrase.</summary>
+    [Fact]
+    public async Task ExtractorPreservesByPrefixOnExplicitDueDate()
+    {
+        var result = await new StubLlmExtractor().ExtractAsync(
+            "Mina will prepare the migration checklist by 2026-11-25.",
+            new DateTime(2026, 11, 18),
+            ["Mina"]);
+
+        result.Items.Should().ContainSingle();
+        result.Items.Single().DueDateText.Should().Be("by 2026-11-25");
+        result.Items.Single().DueDate.Should().Be(new DateTime(2026, 11, 25));
     }
 
     /// <summary>Drops past-discussion lines that hedge an action as uncertain.</summary>
@@ -86,7 +100,7 @@ public sealed class StateMachineAndExtractionTests
             "We said the documentation should be ready by end of next week, but that is not a firm date",
             new DateTime(2026, 11, 17), ["Priya"]);
 
-        result.Should().BeEmpty();
+        result.Items.Should().BeEmpty();
     }
 
     /// <summary>Scores fully resolved actions high and vague unowned actions low.</summary>
@@ -95,42 +109,52 @@ public sealed class StateMachineAndExtractionTests
     {
         var extractor = new StubLlmExtractor();
         var result = await extractor.ExtractAsync(
-            "Priya, can you review the limits by 2026-11-20?\nSomeone should look at the rate limits.",
+            "Priya, can you review the limits by 2026-11-20?\nI can ask the platform team about the alert thresholds.",
             new DateTime(2026, 11, 17), ["Priya"]);
 
-        result.Should().HaveCount(2);
-        result[0].Status.Should().Be(ActionStatus.Draft);
-        result[0].Confidence.Should().Be(0.95);
-        result[0].Confidence.Should().BeGreaterThanOrEqualTo(0.75);
-        result[1].OwnerName.Should().BeNull();
-        result[1].NeedsInput.Should().Contain("owner");
-        result[1].Confidence.Should().Be(0.3);
-        result[1].Confidence.Should().BeLessThan(0.5);
+        result.Items.Should().HaveCount(2);
+        result.Items[0].Status.Should().Be(ActionStatus.Draft);
+        result.Items[0].Confidence.Should().Be(0.95);
+        result.Items[0].Confidence.Should().BeGreaterThanOrEqualTo(0.75);
+        result.Items[1].OwnerName.Should().BeNull();
+        result.Items[1].NeedsInput.Should().Contain("owner");
+        result.Items[1].Confidence.Should().BeApproximately(0.35, 0.000001);
+        result.Items[1].Confidence.Should().BeLessThan(0.5);
     }
 
-    /// <summary>Marks an unrecognized named speaker and speakerless tentative commitment as needing input.</summary>
+    /// <summary>Drops vague "someone should" suggestions instead of treating them as commitments.</summary>
     [Fact]
-    public async Task ExtractorFlagsUnknownSpeakerAndTentativeCommitment()
+    public async Task ExtractorDropsVagueSomeoneShouldSuggestions()
+    {
+        var result = await new StubLlmExtractor().ExtractAsync(
+            "Someone should look at the rate limits.",
+            new DateTime(2026, 11, 17),
+            ["Priya"]);
+
+        result.Items.Should().BeEmpty();
+    }
+
+    /// <summary>Suggests named non-attendees and flags speakerless first-person commitments accurately.</summary>
+    [Fact]
+    public async Task ExtractorFlagsSpeakerUnknownOnlyForSpeakerlessFirstPersonCommitment()
     {
         var extractor = new StubLlmExtractor();
 
         var result = await extractor.ExtractAsync(
-            "Morgan, can you check the cache by Friday?\nI can ask the platform team about the alert thresholds.",
-            new DateTime(2026, 11, 17), ["Priya"]);
+            "Priya, can you check the cache by Friday?\nAlex will write the rollout checks by Friday.\nJordan, can you review the report by Friday?\nI can ask the platform team about the alert thresholds.",
+            new DateTime(2026, 11, 17), ["Priya", "Alex"]);
 
-        result.Should().HaveCount(2);
-        result[0].OwnerName.Should().BeNull();
-        result[0].NeedsInput.Should().Contain("owner").And.Contain("speaker unknown");
-        result[1].Confidence.Should().BeLessThan(0.5);
-        result[1].NeedsInput.Should().Contain("speaker unknown");
-
-        var commitmentResult = await extractor.ExtractAsync(
-            "alex will write down the rollout checks so support knows what to watch.\nWe will check the rate limits by Friday.",
-            new DateTime(2026, 11, 17), ["Alex"]);
-        commitmentResult.Should().HaveCount(2);
-        commitmentResult[0].OwnerName.Should().Be("Alex");
-        commitmentResult[0].Title.Should().Be("Write down the rollout checks");
-        commitmentResult[1].OwnerName.Should().BeNull();
-        commitmentResult[1].NeedsInput.Should().Contain("owner");
+        result.Items.Should().HaveCount(4);
+        result.Items[0].OwnerName.Should().Be("Priya");
+        result.Items[0].NeedsInput.Should().NotContain("speaker unknown");
+        result.Items[1].OwnerName.Should().Be("Alex");
+        result.Items[1].NeedsInput.Should().NotContain("speaker unknown");
+        result.Items[2].OwnerName.Should().BeNull();
+        result.Items[2].SuggestedOwnerName.Should().Be("Jordan");
+        result.Items[2].NeedsInput.Should().Contain("owner").And.NotContain("speaker unknown");
+        result.Items[3].OwnerName.Should().BeNull();
+        result.Items[3].SuggestedOwnerName.Should().BeNull();
+        result.Items[3].Confidence.Should().BeLessThan(0.5);
+        result.Items[3].NeedsInput.Should().Contain("speaker unknown");
     }
 }

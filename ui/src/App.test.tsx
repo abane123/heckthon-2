@@ -1,13 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe } from 'jest-axe'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import { getClock, getDashboard, getHealth, simulateDays } from './api'
+import { getClock, getDashboard, getHealth, resetDemoData, simulateDays } from './api'
 import App from './App'
 import { ToastProvider } from './components/DesignSystem'
-import type { ClockResponse, Dashboard, HealthResponse, SimulationResponse } from './types'
+import type { ClockResponse, Dashboard, DemoResetResponse, HealthResponse, SimulationResponse } from './types'
 import { ThemeProvider } from './theme/ThemeProvider'
 
 vi.mock('./api', async (importOriginal) => {
@@ -17,6 +17,7 @@ vi.mock('./api', async (importOriginal) => {
     getClock: vi.fn(),
     getDashboard: vi.fn(),
     getHealth: vi.fn(),
+    resetDemoData: vi.fn(),
     simulateDays: vi.fn(),
   }
 })
@@ -55,6 +56,11 @@ describe('application shell', () => {
     document.documentElement.removeAttribute('data-theme')
     vi.clearAllMocks()
     vi.mocked(getHealth).mockResolvedValue(healthyResponse)
+    vi.mocked(resetDemoData).mockResolvedValue({
+      currentDate: '2026-11-23T00:00:00Z',
+      meetingCount: 1,
+      actionItemCount: 5,
+    } satisfies DemoResetResponse)
     vi.mocked(getClock).mockResolvedValue(clockResponse)
     vi.mocked(getDashboard).mockResolvedValue(dashboardResponse)
     vi.mocked(simulateDays).mockResolvedValue({
@@ -108,6 +114,23 @@ describe('application shell', () => {
     expect(await screen.findByText('Moved to 18 Nov 2026. 2 reminders sent.')).toBeTruthy()
     await waitFor(() => expect(vi.mocked(getClock).mock.calls.length).toBeGreaterThanOrEqual(2))
     expect(screen.getByText('18 Nov 2026')).toBeTruthy()
+  })
+
+  /** Confirms a development data reset, invalidates the clock, and shows its toast. */
+  it('resets demo data only after confirmation and refreshes server queries', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getClock)
+      .mockResolvedValueOnce(clockResponse)
+      .mockResolvedValue({ currentDate: '2026-11-23T00:00:00Z' })
+    renderApp()
+
+    await user.click(screen.getByRole('button', { name: 'Reset demo data' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Reset demo data' })
+    await user.click(within(dialog).getByRole('button', { name: 'Reset demo data' }))
+
+    expect(vi.mocked(resetDemoData)).toHaveBeenCalledOnce()
+    expect(await screen.findByText('Demo data reset. 5 action items are ready.')).toBeTruthy()
+    await waitFor(() => expect(vi.mocked(getClock).mock.calls.length).toBeGreaterThanOrEqual(2))
   })
 
   /** Persists the selected theme when the header control toggles it. */

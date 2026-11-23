@@ -8,6 +8,7 @@ export type ActionItem = {
   title: string
   ownerId: string | null
   ownerName: string | null
+  suggestedOwnerName: string | null
   dueDate: string | null
   dueDateText: string
   status: ActionStatus
@@ -35,6 +36,28 @@ export type Meeting = {
   transcript: string
   attendees: string[]
   items: ActionItem[]
+  decisions?: string[] | null
+  analysis?: MeetingAnalysis | null
+}
+
+/** Describes the extractor and deterministic post-processing for one meeting. */
+export type MeetingAnalysis = {
+  provider: string
+  model: string
+  durationMs: number
+  droppedItems: number
+  chunkCount: number
+  warnings?: string[]
+}
+
+/** Mirrors the active transcript-analysis provider's health endpoint. */
+export type LlmInfo = {
+  provider: string
+  model: string
+  status: string
+  message: string
+  fallbackToStub: boolean
+  maxTranscriptCharsPerChunk: number
 }
 
 /** Mirrors the API user DTO. */
@@ -65,9 +88,16 @@ export type AuditEvent = {
 
 /** Mirrors the aggregate metrics returned by the dashboard API. */
 export type Dashboard = {
-  onTimeRate: number
-  slipRate: number
+  onTimeRate: number | null
+  slipRate: number | null
   openItemsPerOwner: Record<string, number>
+}
+
+/** Mirrors the result of resetting the development demo database and clock. */
+export type DemoResetResponse = {
+  currentDate: string
+  meetingCount: number
+  actionItemCount: number
 }
 
 /** Mirrors the health endpoint response. */
@@ -75,6 +105,11 @@ export type HealthResponse = {
   status: string
   version: string
   utcTime: string
+  llm?: {
+    provider: string
+    status: string
+    model: string
+  }
 }
 
 /** Mirrors the virtual-clock endpoint response. */

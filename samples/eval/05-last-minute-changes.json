@@ -1,0 +1,24 @@
+{
+  "id": "05-last-minute-changes",
+  "language": "English",
+  "meetingDate": "2026-11-23",
+  "attendees": ["Luis", "Asha", "Kim"],
+  "transcript": "[00:09] Asha will update the customer FAQ by tomorrow.\n[01:21] Luis, can you rerun the load test by Friday?\n[02:47] Kim will post the final go/no-go note by 2026-11-30.\n[04:18] Maybe we could move the launch earlier.\n[05:02] Someone should check whether support is ready.",
+  "expectedItems": [
+    {
+      "owner": "Asha",
+      "dueDateText": "by tomorrow",
+      "quote": "Asha will update the customer FAQ by tomorrow."
+    },
+    {
+      "owner": "Luis",
+      "dueDateText": "by Friday",
+      "quote": "Luis, can you rerun the load test by Friday?"
+    },
+    {
+      "owner": "Kim",
+      "dueDateText": "by 2026-11-30",
+      "quote": "Kim will post the final go/no-go note by 2026-11-30."
+    }
+  ]
+}

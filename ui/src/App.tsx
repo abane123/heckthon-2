@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock3, Menu, Moon, Sun, X } from 'lucide-react'
-import { simulateDays } from './api'
+import { resetDemoData, simulateDays } from './api'
 import './App.css'
-import { Button, Tooltip, useToast } from './components/DesignSystem'
+import { Button, ConfirmDialog, Tooltip, useToast } from './components/DesignSystem'
 import { NotFoundPage } from './components/NotFoundPage'
 import { useApiHealth, useVirtualClock } from './hooks'
 import AuditPage from './pages/AuditPage'
@@ -42,6 +42,7 @@ function AppHeader() {
   const { showToast } = useToast()
   const { theme, toggleTheme } = useTheme()
   const [navOpen, setNavOpen] = useState(false)
+  const [resetConfirmationOpen, setResetConfirmationOpen] = useState(false)
   const simulate = useMutation({
     mutationFn: () => simulateDays(1),
     onSuccess: async (result) => {
@@ -53,8 +54,19 @@ function AppHeader() {
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   })
+  // Reload all server-backed views after reset because every database record is replaced.
+  const reset = useMutation({
+    mutationFn: resetDemoData,
+    onSuccess: async (result) => {
+      queryClient.setQueryData(queryKeys.clock, { currentDate: result.currentDate })
+      await queryClient.invalidateQueries()
+      showToast(`Demo data reset. ${result.actionItemCount} action items are ready.`, 'success')
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  })
 
   return (
+    <>
     <header className="topbar">
       <Link className="brand" to="/" onClick={() => setNavOpen(false)}>Meeting Actions</Link>
       <Button
@@ -78,6 +90,11 @@ function AppHeader() {
         <Button variant="secondary" loading={simulate.isPending} onClick={() => simulate.mutate()}>
           Simulate tomorrow
         </Button>
+        {import.meta.env.DEV && (
+          <Button variant="danger" loading={reset.isPending} onClick={() => setResetConfirmationOpen(true)}>
+            Reset demo data
+          </Button>
+        )}
         <Button
           variant="ghost"
           className="theme-toggle"
@@ -89,6 +106,20 @@ function AppHeader() {
         </Button>
       </div>
     </header>
+    {import.meta.env.DEV && (
+      <ConfirmDialog
+        open={resetConfirmationOpen}
+        title="Reset demo data"
+        message="This replaces current meetings and action items with the standard follow-up demo scenario."
+        confirmLabel="Reset demo data"
+        onCancel={() => setResetConfirmationOpen(false)}
+        onConfirm={() => {
+          setResetConfirmationOpen(false)
+          reset.mutate()
+        }}
+      />
+    )}
+    </>
   )
 }
 

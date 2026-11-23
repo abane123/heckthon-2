@@ -1,5 +1,6 @@
 using MeetingActions.Core.Abstractions;
 using MeetingActions.Core.Domain;
+using MeetingActions.Core.Services;
 using Microsoft.Extensions.Options;
 
 namespace MeetingActions.Infrastructure.Integrations;
@@ -19,7 +20,12 @@ public sealed class AzureOpenAiOptions
 public sealed class AzureOpenAiExtractor(IOptions<AzureOpenAiOptions> options) : ILlmExtractor
 {
     /// <summary>Indicates that external extraction has not been configured or implemented.</summary>
-    public Task<IReadOnlyList<ActionItem>> ExtractAsync(string transcript, DateTime meetingDate, IReadOnlyList<string> attendees, CancellationToken cancellationToken = default)
+    public Task<AnalysisResult> ExtractAsync(
+        string transcript,
+        DateTime meetingDate,
+        IReadOnlyList<string> attendees,
+        CancellationToken cancellationToken = default,
+        string meetingTitle = "")
     {
         _ = options.Value;
         // TODO: Add Azure OpenAI request/response mapping using the configured endpoint and deployment.

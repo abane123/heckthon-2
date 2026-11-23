@@ -4,3 +4,7 @@ GET {{MeetingActions.Api_HostAddress}}/weatherforecast/
 Accept: application/json
 
 ###
+
+### Reset development demo data and the virtual clock
+POST {{MeetingActions.Api_HostAddress}}/api/dev/reset
+Accept: application/json

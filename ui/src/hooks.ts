@@ -6,6 +6,7 @@ import {
 import type { QueryKey } from '@tanstack/react-query'
 import {
   approveItem,
+  addMeetingAttendee,
   createMeeting,
   createTickets,
   getActionItems,
@@ -13,6 +14,7 @@ import {
   getClock,
   getDashboard,
   getHealth,
+  getLlmInfo,
   getMeeting,
   getMeetingItems,
   getMeetings,
@@ -44,6 +46,23 @@ export function useMeetingDetails(meetingId: string) {
     queryKey: queryKeys.meetings.detail(meetingId),
     queryFn: ({ signal }) => getMeeting(meetingId, signal),
     enabled: Boolean(meetingId),
+  })
+}
+
+/** Adds a meeting attendee and refreshes meeting metadata and its draft actions. */
+export function useAddMeetingAttendee() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ meetingId, name }: { meetingId: string; name: string }) =>
+      addMeetingAttendee(meetingId, name),
+    onSuccess: async (_meeting, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.meetings.detail(variables.meetingId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.items.meeting(variables.meetingId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.meetings.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.items.all }),
+      ])
+    },
   })
 }
 
@@ -87,6 +106,16 @@ export function useApiHealth() {
     queryFn: ({ signal }) => getHealth(signal),
     refetchInterval: 15_000,
     staleTime: 15_000,
+    retry: 1,
+  })
+}
+
+/** Loads the selected transcript-analysis engine and its availability details. */
+export function useLlmInfo() {
+  return useQuery({
+    queryKey: queryKeys.llmInfo,
+    queryFn: ({ signal }) => getLlmInfo(signal),
+    staleTime: 30_000,
     retry: 1,
   })
 }

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router-dom'
 import { Button, Card, ConfidenceBar, ConfirmDialog, EmptyState, ErrorState, Modal, Skeleton, StatusBadge, Tooltip, useToast } from '../components/DesignSystem'
-import { useApproveItem, useCreateTickets, useMeetingDetails, useMeetingItems, useRejectItem, useRestoreRejectedItem, useUnapproveItem, useUpdateItem } from '../hooks'
+import { useAddMeetingAttendee, useApproveItem, useCreateTickets, useMeetingDetails, useMeetingItems, useRejectItem, useRestoreRejectedItem, useUnapproveItem, useUpdateItem } from '../hooks'
 import type { ActionItem, TicketCreationFailure } from '../types'
 import { queryKeys } from '../queryKeys'
 import { formatDate } from '../utils/format'
@@ -18,6 +18,7 @@ export default function ReviewPage() {
   const { showToast } = useToast()
   const meetingQuery = useMeetingDetails(id)
   const itemsQuery = useMeetingItems(id)
+  const addAttendee = useAddMeetingAttendee()
   const approve = useApproveItem()
   const reject = useRejectItem()
   const restore = useRestoreRejectedItem()
@@ -42,6 +43,7 @@ export default function ReviewPage() {
 
   const items = itemsQuery.data ?? emptyActionItems
   const meetingAttendees = meetingQuery.data?.attendees ?? emptyAttendees
+  const navigableItems = useMemo(() => items.filter((item) => item.status !== 'Rejected'), [items])
   const approvedItems = items.filter((item) => item.status === 'Approved')
   const draftItems = items.filter((item) => item.status === 'Draft')
   const rejectedItems = items.filter((item) => item.status === 'Rejected')
@@ -66,21 +68,31 @@ export default function ReviewPage() {
       const activeElement = document.activeElement
       if (activeElement instanceof HTMLElement
         && (activeElement.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(activeElement.tagName))) return
+      if (shortcutsOpen || confirmBulk || confirmTickets || editingId) return
       if (event.key === '?') {
         setShortcutsOpen(true)
         return
       }
-      if (items.length === 0) return
+      if (navigableItems.length === 0) return
       if (event.key.toLowerCase() === 'j' || event.key.toLowerCase() === 'k') {
         event.preventDefault()
+        const currentIndex = navigableItems.findIndex(
+          (item) => itemRefs.current.get(item.id) === document.activeElement,
+        )
+        const startIndex = currentIndex >= 0
+          ? currentIndex
+          : event.key.toLowerCase() === 'j' ? -1 : navigableItems.length
         const nextIndex = event.key.toLowerCase() === 'j'
-          ? Math.min(items.length - 1, focusedIndex + 1)
-          : Math.max(0, focusedIndex - 1)
+          ? Math.min(navigableItems.length - 1, startIndex + 1)
+          : Math.max(0, startIndex - 1)
         setFocusedIndex(nextIndex)
-        itemRefs.current.get(items[nextIndex]?.id ?? '')?.focus()
+        itemRefs.current.get(navigableItems[nextIndex]?.id ?? '')?.focus()
         return
       }
-      const item = items[focusedIndex]
+      const activeIndex = navigableItems.findIndex(
+        (item) => itemRefs.current.get(item.id) === document.activeElement,
+      )
+      const item = navigableItems[activeIndex >= 0 ? activeIndex : focusedIndex]
       if (!item) return
       if (event.key.toLowerCase() === 'a' && item.status === 'Draft' && item.needsInput.length === 0) approveDraft(item.id)
       if (event.key.toLowerCase() === 'r' && item.status === 'Draft') rejectDraft(item.id)
@@ -89,7 +101,7 @@ export default function ReviewPage() {
 
     document.addEventListener('keydown', handleShortcut)
     return () => document.removeEventListener('keydown', handleShortcut)
-  }, [approveDraft, beginEdit, focusedIndex, items, rejectDraft])
+  }, [approveDraft, beginEdit, confirmBulk, confirmTickets, editingId, focusedIndex, navigableItems, rejectDraft, shortcutsOpen])
 
   useEffect(() => {
     if (editingId) editTitleRef.current?.focus()
@@ -171,6 +183,16 @@ export default function ReviewPage() {
     }
   }
 
+  /** Adds a suggested non-attendee and refreshes the meeting's resolved draft items. */
+  async function addSuggestedAttendee(name: string) {
+    try {
+      await addAttendee.mutateAsync({ meetingId: id, name })
+      showToast(`${name} added as an attendee.`, 'success')
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : `${name} could not be added as an attendee.`, 'error')
+    }
+  }
+
   /** Renders one draft, approved, rejected, or ticketed action with its organizer controls. */
   function renderItem(item: ActionItem, rejected = false) {
     const isEditing = editingId === item.id
@@ -228,6 +250,18 @@ export default function ReviewPage() {
             <span className="avatar" aria-hidden="true">{getInitials(item.ownerName)}</span>
             <span>{item.ownerName ?? 'Unassigned'}</span>
           </div>
+          {!item.ownerName && item.suggestedOwnerName && !meetingAttendees.some(
+            (attendee) => attendee.toLowerCase() === item.suggestedOwnerName?.toLowerCase(),
+          ) && (
+            <div className="suggested-owner">
+              <small>{item.suggestedOwnerName} is not in the attendee list</small>
+              <Button variant="ghost" loading={addAttendee.isPending}
+                className="suggested-owner-button"
+                onClick={() => void addSuggestedAttendee(item.suggestedOwnerName ?? '')}>
+                Add {item.suggestedOwnerName} as attendee
+              </Button>
+            </div>
+          )}
         </td>
         <td data-label="Due">
           <strong>{formatDate(item.dueDate)}</strong>
@@ -239,10 +273,7 @@ export default function ReviewPage() {
         </td>
         <td data-label="Review">
           {item.needsInput.length > 0 && (
-            <div className="needs-input-list">
-              <span className="needs-input">Needs input</span>
-              {item.needsInput.map((field) => <span className="chip chip-warning" key={field}>{field}</span>)}
-            </div>
+            <p className="needs-input">Needs: {item.needsInput.join(', ')}</p>
           )}
           <div className="row-actions">
             {item.status === 'Draft' && !isEditing && <>
@@ -274,6 +305,24 @@ export default function ReviewPage() {
           <p className="eyebrow">Organizer review</p>
           <h1>{meeting?.title ?? 'Review action items'}</h1>
           {meeting && <p className="muted">{formatDate(meeting.meetingDate)} · {meeting.attendees.join(', ')}</p>}
+          {meeting?.analysis && (
+            <div className="analysis-meta">
+              <p>
+                {/* Show the actual fallback engine rather than the configured Ollama model. */}
+                Analysed with {meeting.analysis.provider === 'Stub (fallback)' ? 'Stub (fallback)' : meeting.analysis.model}
+                {' '}in {(meeting.analysis.durationMs / 1000).toFixed(1)}s, {meeting.analysis.droppedItems} items dropped (quote not found)
+                {meeting.analysis.warnings && meeting.analysis.warnings.length > 0
+                  ? ` · Warning: ${meeting.analysis.warnings.join('; ')}`
+                  : ''}
+              </p>
+              {meeting.decisions && meeting.decisions.length > 0 && (
+                <details className="decisions-details">
+                  <summary>Decisions</summary>
+                  <ul>{meeting.decisions.map((decision, index) => <li key={`${index}-${decision}`}>{decision}</li>)}</ul>
+                </details>
+              )}
+            </div>
+          )}
         </div>
         <div className="review-summary" aria-label="Review summary">
           <SummaryCount label="Items found" count={items.length} />
@@ -301,7 +350,7 @@ export default function ReviewPage() {
             <table className="data-table review-table">
               <caption className="visually-hidden">Meeting action items for organizer review</caption>
               <thead><tr><th scope="col">Action</th><th scope="col">Owner</th><th scope="col">Due</th><th scope="col">Confidence</th><th scope="col">Source quote</th><th scope="col">Review</th></tr></thead>
-              <tbody>{items.filter((item) => item.status !== 'Rejected').map((item) => renderItem(item))}</tbody>
+              <tbody>{navigableItems.map((item) => renderItem(item))}</tbody>
             </table>
           </div>
         </Card>

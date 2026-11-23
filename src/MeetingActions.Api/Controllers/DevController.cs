@@ -1,5 +1,6 @@
 using MeetingActions.Core.Abstractions;
 using MeetingActions.Core.Domain;
+using MeetingActions.Api;
 using MeetingActions.Jobs;
 using Microsoft.AspNetCore.Mvc;
 
@@ -8,7 +9,11 @@ namespace MeetingActions.Api.Controllers;
 /// <summary>Exposes development-only helpers for deterministic demos.</summary>
 [ApiController]
 [Route("api/dev")]
-public sealed class DevController(IClock clock, FollowUpService followUpService) : ControllerBase
+public sealed class DevController(
+    IClock clock,
+    FollowUpService followUpService,
+    IDemoDataStore demoDataStore,
+    IWebHostEnvironment environment) : ControllerBase
 {
     /// <summary>Returns the current virtual clock date for the application shell.</summary>
     [HttpGet("clock")]
@@ -31,5 +36,28 @@ public sealed class DevController(IClock clock, FollowUpService followUpService)
         virtualClock.AdvanceDays(days);
         var remindersSent = await followUpService.RunAsync(cancellationToken);
         return Ok(new { virtualClock.UtcNow, AdvancedDays = days, RemindersSent = remindersSent });
+    }
+
+    /// <summary>Resets the development database and virtual clock to the standard demo scenario.</summary>
+    [HttpPost("reset")]
+    public async Task<IActionResult> Reset(CancellationToken cancellationToken)
+    {
+        if (!environment.IsDevelopment())
+        {
+            return NotFound();
+        }
+
+        if (clock is not VirtualClock virtualClock)
+        {
+            return Conflict("The virtual clock is not enabled.");
+        }
+
+        await SeedData.ResetDemoAsync(demoDataStore, virtualClock, cancellationToken);
+        return Ok(new
+        {
+            CurrentDate = virtualClock.UtcNow,
+            MeetingCount = 1,
+            ActionItemCount = 5
+        });
     }
 }

@@ -1,0 +1,19 @@
+{
+  "id": "07-devanagari",
+  "language": "Hindi (Devanagari)",
+  "meetingDate": "2026-11-25",
+  "attendees": ["Priya Sharma", "Amit Verma"],
+  "transcript": "[05:02] Alex Kim: प्रिया जी, कल तक रिपोर्ट भेज देना।\n[06:18] अमित, इस हफ्ते के अंत तक रेट लिमिट का कॉन्फ़िग अपडेट कर देना।\n[07:30] किसी को डैशबोर्ड देखना चाहिए।",
+  "expectedItems": [
+    {
+      "owner": "Priya Sharma",
+      "dueDateText": "कल तक",
+      "quote": "प्रिया जी, कल तक रिपोर्ट भेज देना।"
+    },
+    {
+      "owner": "Amit Verma",
+      "dueDateText": "इस हफ्ते के अंत तक",
+      "quote": "अमित, इस हफ्ते के अंत तक रेट लिमिट का कॉन्फ़िग अपडेट कर देना।"
+    }
+  ]
+}

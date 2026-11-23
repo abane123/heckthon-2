@@ -1,9 +1,8 @@
 using MeetingActions.Api.Contracts;
 using MeetingActions.Core.Abstractions;
 using MeetingActions.Core.Domain;
-using MeetingActions.Infrastructure.Persistence;
+using MeetingActions.Core.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace MeetingActions.Api.Controllers;
 
@@ -12,7 +11,9 @@ namespace MeetingActions.Api.Controllers;
 [Route("api/meetings")]
 public sealed class MeetingsController(
     IMeetingRepository repository,
-    MeetingActionsDbContext dbContext,
+    IActionItemRepository actionItemRepository,
+    IUserRepository userRepository,
+    IAuditEventRepository auditEventRepository,
     ILlmExtractor extractor,
     ITaskProvider taskProvider,
     ActionItemStateMachine stateMachine,
@@ -35,8 +36,10 @@ public sealed class MeetingsController(
             Transcript = request.Transcript,
             Attendees = request.Attendees.Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name.Trim()).ToList()
         };
-        var users = await dbContext.Users.ToListAsync(cancellationToken);
-        meeting.Items = (await extractor.ExtractAsync(meeting.Transcript, meeting.MeetingDate, meeting.Attendees, cancellationToken))
+        var users = await userRepository.GetAllAsync(cancellationToken);
+        var analysis = await extractor.ExtractAsync(
+            meeting.Transcript, meeting.MeetingDate, meeting.Attendees, cancellationToken, meeting.Title);
+        meeting.Items = analysis.Items
             .Select(item =>
             {
                 item.MeetingId = meeting.Id;
@@ -44,6 +47,7 @@ public sealed class MeetingsController(
                     string.Equals(user.Name, item.OwnerName, StringComparison.OrdinalIgnoreCase))?.Id;
                 return item;
             }).ToList();
+        SetAnalysisMetadata(meeting, analysis);
         await repository.AddMeetingAsync(meeting, cancellationToken);
         return CreatedAtAction(nameof(Get), new { id = meeting.Id }, meeting);
     }
@@ -61,6 +65,87 @@ public sealed class MeetingsController(
         return meeting is null ? NotFound() : Ok(meeting);
     }
 
+    /// <summary>Adds an attendee and resolves matching owners on this meeting's draft items.</summary>
+    [HttpPost("{id:guid}/attendees")]
+    public async Task<ActionResult<Meeting>> AddAttendee(
+        Guid id,
+        [FromBody] AddMeetingAttendeeRequest request,
+        CancellationToken cancellationToken)
+    {
+        var meeting = await repository.GetMeetingAsync(id, cancellationToken);
+        if (meeting is null)
+        {
+            return NotFound();
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            var problem = new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                [nameof(request.Name)] = ["An attendee name is required."]
+            })
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "One or more validation errors occurred.",
+                Instance = HttpContext.Request.Path
+            };
+            problem.Extensions["traceId"] = HttpContext.TraceIdentifier;
+            return BadRequest(problem);
+        }
+
+        var attendeeName = request.Name.Trim();
+        if (!meeting.Attendees.Contains(attendeeName, StringComparer.OrdinalIgnoreCase))
+        {
+            meeting.Attendees.Add(attendeeName);
+        }
+
+        var analysis = await extractor.ExtractAsync(
+            meeting.Transcript, meeting.MeetingDate, meeting.Attendees, cancellationToken, meeting.Title);
+        meeting.Decisions = analysis.Decisions.ToList();
+        meeting.Analysis = ToMeetingAnalysisMetadata(analysis);
+        var users = await userRepository.GetAllAsync(cancellationToken);
+        foreach (var item in meeting.Items.Where(item =>
+                     item.Status == ActionStatus.Draft
+                     && item.OwnerId is null
+                     && string.IsNullOrWhiteSpace(item.OwnerName)))
+        {
+            var candidate = analysis.Items.FirstOrDefault(extracted =>
+                extracted.Timestamp == item.Timestamp
+                && string.Equals(extracted.SourceQuote, item.SourceQuote, StringComparison.Ordinal));
+            if (candidate is null)
+            {
+                continue;
+            }
+
+            item.OwnerName = candidate.OwnerName;
+            item.OwnerId = users.FirstOrDefault(user =>
+                string.Equals(user.Name, candidate.OwnerName, StringComparison.OrdinalIgnoreCase))?.Id;
+            item.SuggestedOwnerName = candidate.SuggestedOwnerName;
+            item.Confidence = candidate.Confidence;
+            item.NeedsInput.RemoveAll(value =>
+                value.Equals("owner", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("speaker unknown", StringComparison.OrdinalIgnoreCase));
+            foreach (var missingField in candidate.NeedsInput.Where(value =>
+                         value.Equals("owner", StringComparison.OrdinalIgnoreCase)
+                         || value.Equals("speaker unknown", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (!item.NeedsInput.Contains(missingField, StringComparer.OrdinalIgnoreCase))
+                {
+                    item.NeedsInput.Add(missingField);
+                }
+            }
+
+            var expectedVersion = item.Version;
+            if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+            {
+                return ConcurrencyConflict();
+            }
+        }
+
+        await repository.UpdateMeetingAsync(meeting, cancellationToken);
+        return Ok(meeting);
+    }
+
     /// <summary>Lists the action items belonging to one meeting.</summary>
     [HttpGet("{id:guid}/items")]
     public async Task<ActionResult<IReadOnlyList<ActionItem>>> GetItems(Guid id, CancellationToken cancellationToken)
@@ -70,7 +155,7 @@ public sealed class MeetingsController(
             return NotFound();
         }
 
-        return Ok(await repository.GetItemsAsync(id, cancellationToken));
+        return Ok(await actionItemRepository.GetItemsAsync(id, cancellationToken));
     }
 
     /// <summary>Creates external tickets for all approved items in a meeting.</summary>
@@ -87,6 +172,18 @@ public sealed class MeetingsController(
         var failures = new List<TicketCreationFailure>();
         foreach (var item in meeting.Items.Where(item => item.Status == ActionStatus.Approved))
         {
+            if (string.IsNullOrWhiteSpace(item.OwnerName))
+            {
+                failures.Add(new TicketCreationFailure(item.Id, item.Title, "Missing owner"));
+                continue;
+            }
+
+            if (item.DueDate is null)
+            {
+                failures.Add(new TicketCreationFailure(item.Id, item.Title, "Missing due date"));
+                continue;
+            }
+
             try
             {
                 var ticketId = await taskProvider.CreateTaskAsync(item, cancellationToken);
@@ -111,18 +208,27 @@ public sealed class MeetingsController(
                 continue;
             }
 
+            var expectedVersion = item.Version;
             stateMachine.Transition(item, ActionStatus.Created);
-            dbContext.AuditEvents.Add(new AuditEvent
+            if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+            {
+                failures.Add(new TicketCreationFailure(
+                    item.Id,
+                    item.Title,
+                    "The action item changed while its ticket was being created. You can retry it."));
+                continue;
+            }
+
+            await auditEventRepository.AddAsync(new AuditEvent
             {
                 ActionItemId = item.Id,
                 EventType = "Ticket created",
                 Actor = "Organizer",
                 CreatedAt = clock.UtcNow
-            });
+            }, cancellationToken);
             createdItems.Add(item);
         }
 
-        await repository.SaveChangesAsync(cancellationToken);
         return Ok(new TicketCreationResponse(createdItems, failures));
     }
 
@@ -136,11 +242,37 @@ public sealed class MeetingsController(
             return NotFound();
         }
 
-        var previousMeetings = await dbContext.Meetings
-            .Where(other => other.Id != id && other.Title == meeting.Title && other.MeetingDate < meeting.MeetingDate)
-            .SelectMany(other => other.Items)
-            .Where(item => item.Status != ActionStatus.Done && item.Status != ActionStatus.Rejected)
-            .ToListAsync(cancellationToken);
-        return Ok(previousMeetings);
+        return Ok(await repository.GetNextAgendaItemsAsync(id, cancellationToken));
     }
+
+    /// <summary>Builds a traceable conflict response when a versioned action update loses a race.</summary>
+    private ConflictObjectResult ConcurrencyConflict()
+    {
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status409Conflict,
+            Title = "The action item was changed by another request.",
+            Detail = "Reload the action item and retry the operation.",
+            Instance = HttpContext.Request.Path
+        };
+        problem.Extensions["traceId"] = HttpContext.TraceIdentifier;
+        return Conflict(problem);
+    }
+
+    /// <summary>Copies completed analysis metadata to the API meeting entity.</summary>
+    private static void SetAnalysisMetadata(Meeting meeting, AnalysisResult analysis)
+    {
+        meeting.Decisions = analysis.Decisions.ToList();
+        meeting.Analysis = ToMeetingAnalysisMetadata(analysis);
+    }
+
+    /// <summary>Maps the internal extraction result to its backwards-compatible meeting response metadata.</summary>
+    private static MeetingAnalysisMetadata ToMeetingAnalysisMetadata(AnalysisResult analysis) =>
+        new(
+            analysis.Provider,
+            analysis.Model,
+            analysis.ElapsedMilliseconds,
+            analysis.DroppedCount,
+            analysis.ChunkCount,
+            analysis.Warnings);
 }

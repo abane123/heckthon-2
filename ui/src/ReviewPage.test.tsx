@@ -4,15 +4,18 @@ import userEvent from '@testing-library/user-event'
 import { axe } from 'jest-axe'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { approveItem, createTickets, getMeeting, getMeetingItems, rejectItem, restoreItem, undoApproval, updateItem } from './api'
+import { addMeetingAttendee, approveItem, createTickets, getMeeting, getMeetingItems, rejectItem, restoreItem, undoApproval, updateItem } from './api'
 import type { ActionItem, Meeting, TicketCreationResponse } from './types'
 import ReviewPage from './pages/ReviewPage'
 import { ToastProvider } from './components/DesignSystem'
+import './index.css'
+import './App.css'
 
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>()
   return {
     ...actual,
+    addMeetingAttendee: vi.fn(),
     getMeeting: vi.fn(),
     getMeetingItems: vi.fn(),
     approveItem: vi.fn(),
@@ -30,6 +33,7 @@ const item: ActionItem = {
   title: 'Review rate limits',
   ownerId: null,
   ownerName: null,
+  suggestedOwnerName: null,
   dueDate: null,
   dueDateText: 'before the release',
   status: 'Draft',
@@ -51,12 +55,16 @@ const meeting: Meeting = {
 
 /** Covers the review table and its organizer approval action. */
 describe('ReviewPage', () => {
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    delete document.documentElement.dataset.theme
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getMeeting).mockResolvedValue(meeting)
     vi.mocked(getMeetingItems).mockResolvedValue([item])
+    vi.mocked(addMeetingAttendee).mockResolvedValue(meeting)
     vi.mocked(approveItem).mockResolvedValue({ ...item, status: 'Approved' })
     vi.mocked(createTickets).mockResolvedValue({ createdItems: [], failures: [] })
     vi.mocked(rejectItem).mockResolvedValue({ ...item, status: 'Rejected' })
@@ -93,6 +101,39 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
     await waitFor(() => expect(vi.mocked(approveItem).mock.calls[0]?.[0]).toBe('item-1'))
+  })
+
+  /** Shows analysis provenance, dropped quotes, and the collapsible decision list. */
+  it('renders analysis metadata and separated decisions', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getMeeting).mockResolvedValue({
+      ...meeting,
+      decisions: ['Keep the rollout window unchanged.'],
+      analysis: {
+        provider: 'Stub (fallback)',
+        model: 'Built-in rules',
+        durationMs: 1250,
+        droppedItems: 2,
+        chunkCount: 1,
+        warnings: ['Ollama prompt may have been truncated.'],
+      },
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/meetings/meeting-1/review']}>
+            <Routes><Route path="/meetings/:id/review" element={<ReviewPage />} /></Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText(
+      /Analysed with Stub \(fallback\) in 1.3s, 2 items dropped \(quote not found\).*Warning: Ollama prompt may have been truncated/,
+    )).toBeTruthy()
+    await user.click(screen.getByText('Decisions'))
+    expect(screen.getByText('Keep the rollout window unchanged.')).toBeTruthy()
   })
 
   /** Shows confidence tiers for a resolved action and a vague unowned action. */
@@ -194,6 +235,36 @@ describe('ReviewPage', () => {
     await waitFor(() => expect(vi.mocked(restoreItem).mock.calls[0]?.[0]).toBe('item-1'))
   })
 
+  /** Adds a suggested owner as an attendee and shows the newly resolved owner. */
+  it('offers to add a suggested owner to the attendee list', async () => {
+    const user = userEvent.setup()
+    const unassignedItem = { ...item, needsInput: ['owner'], suggestedOwnerName: 'Jordan' }
+    vi.mocked(getMeetingItems).mockResolvedValue([unassignedItem])
+    vi.mocked(addMeetingAttendee).mockImplementation(async (_meetingId, name) => {
+      const updatedItem = { ...unassignedItem, ownerName: name, suggestedOwnerName: null, needsInput: [] }
+      const updatedMeeting = { ...meeting, attendees: [...meeting.attendees, name], items: [updatedItem] }
+      vi.mocked(getMeeting).mockResolvedValue(updatedMeeting)
+      vi.mocked(getMeetingItems).mockResolvedValue([updatedItem])
+      return updatedMeeting
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/meetings/meeting-1/review']}>
+            <Routes><Route path="/meetings/:id/review" element={<ReviewPage />} /></Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Add Jordan as attendee' }))
+
+    await waitFor(() => expect(vi.mocked(addMeetingAttendee).mock.calls[0]).toEqual(['meeting-1', 'Jordan']))
+    expect(await screen.findByText('Jordan', { selector: '.owner-display span' })).toBeTruthy()
+    expect(screen.queryByText('Jordan is not in the attendee list')).toBeNull()
+  })
+
   /** Confirms the eligible count before bulk-approving complete high-confidence items. */
   it('requires confirmation before approving all high-confidence drafts', async () => {
     const user = userEvent.setup()
@@ -288,8 +359,45 @@ describe('ReviewPage', () => {
     expect(screen.getByText('The ticket provider could not create this item. You can retry it.')).toBeTruthy()
   })
 
-  /** Runs axe against review content rendered for a draft action item. */
-  it('has no axe accessibility violations', async () => {
+  /** Supports item navigation and the approve, reject, edit, and help keyboard shortcuts. */
+  it('moves through review items and runs the documented keyboard shortcuts', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getMeetingItems).mockResolvedValue([
+      { ...item, id: 'item-1', title: 'Review first item', needsInput: [] },
+      { ...item, id: 'item-2', title: 'Review second item', needsInput: [] },
+    ])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/meetings/meeting-1/review']}>
+            <Routes><Route path="/meetings/:id/review" element={<ReviewPage />} /></Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    )
+
+    await screen.findByText('Review first item')
+    fireEvent.keyDown(document, { key: 'j' })
+    expect(document.activeElement).toBe(screen.getByText('Review first item').closest('tr'))
+    fireEvent.keyDown(document, { key: 'j' })
+    expect(document.activeElement).toBe(screen.getByText('Review second item').closest('tr'))
+    fireEvent.keyDown(document, { key: 'k' })
+    expect(document.activeElement).toBe(screen.getByText('Review first item').closest('tr'))
+    fireEvent.keyDown(document, { key: 'a' })
+    await waitFor(() => expect(vi.mocked(approveItem).mock.calls[0]?.[0]).toBe('item-1'))
+    fireEvent.keyDown(document, { key: 'r' })
+    await waitFor(() => expect(vi.mocked(rejectItem).mock.calls[0]?.[0]).toBe('item-1'))
+    fireEvent.keyDown(document, { key: 'e' })
+    expect(await screen.findByRole('textbox', { name: 'Title' })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.keyDown(document, { key: '?' })
+    expect(await screen.findByRole('dialog', { name: 'Review keyboard shortcuts' })).toBeTruthy()
+  })
+
+  /** Keeps review fields available as labelled cards at a narrow viewport. */
+  it('renders labelled stacked review cells at a narrow viewport', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 })
     vi.mocked(getMeetingItems).mockResolvedValue([{ ...item, needsInput: [] }])
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { container } = render(
@@ -303,6 +411,39 @@ describe('ReviewPage', () => {
     )
 
     await screen.findByText('Review rate limits')
+    expect(window.innerWidth).toBe(360)
+    expect(container.querySelector('.review-table tr td[data-label="Action"]')).toBeTruthy()
+    expect(container.querySelector('.review-table tr td[data-label="Source"]')).toBeTruthy()
+  })
+
+  /** Runs axe against review content in both supported colour themes. */
+  it.each(['light', 'dark'])('has no axe accessibility violations in %s theme', async (theme) => {
+    document.documentElement.dataset.theme = theme
+    vi.mocked(getMeetingItems).mockResolvedValue([{ ...item, needsInput: [] }])
+    vi.mocked(getMeeting).mockResolvedValue({
+      ...meeting,
+      decisions: ['Keep the rollout window unchanged.'],
+      analysis: {
+        provider: 'Ollama',
+        model: 'llama3.1:8b',
+        durationMs: 2200,
+        droppedItems: 1,
+        chunkCount: 2,
+      },
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/meetings/meeting-1/review']}>
+            <Routes><Route path="/meetings/:id/review" element={<ReviewPage />} /></Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    )
+
+    await screen.findByText('Review rate limits')
     expect((await axe(container)).violations).toEqual([])
+    delete document.documentElement.dataset.theme
   })
 })
