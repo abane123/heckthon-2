@@ -1,0 +1,9 @@
+[00:00] Release Readiness, ten-minute check-in. We need to be honest about what is and is not ready.
+[01:12] The dashboard is mostly there, but we have not agreed how it behaves when traffic spikes.
+[02:04] Someone should look at the rate limits before we put this in front of customers.
+[03:18] Priya, can you sort it before the release? The retry behavior is also a little unclear.
+[04:36] Alex will write down the rollout checks so support knows what to watch.
+[05:44] We said the documentation should be ready by end of next week, but that is not a firm date.
+[06:51] Jordan, can you summarize the rollout risks by end of next week?
+[08:03] I can ask the platform team about the alert thresholds, but I need to check who owns that.
+[09:27] Let's bring anything still open to the next release-readiness meeting.

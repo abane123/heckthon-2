@@ -1,0 +1,73 @@
+/* Centralizes the light and dark palette, spacing scale, elevation, and type rhythm. */
+:root {
+  color-scheme: light;
+  --color-bg: #f5f7fb;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-text: #192437;
+  --color-muted: #526076;
+  --color-border: #d7deea;
+  --color-primary: #294fbd;
+  --color-primary-strong: #1d3f9f;
+  --color-primary-soft: #e8edff;
+  --color-success: #17643c;
+  --color-success-soft: #e4f5eb;
+  --color-warning: #744700;
+  --color-warning-soft: #fff1d3;
+  --color-danger: #9c2828;
+  --color-danger-soft: #ffeded;
+  --color-info: #164a82;
+  --color-info-soft: #e6f1ff;
+  --color-focus: #164aab;
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --space-5: 40px;
+  --space-6: 48px;
+  --space-7: 56px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 2px 8px rgb(22 37 64 / 8%);
+  --shadow-md: 0 12px 32px rgb(22 37 64 / 14%);
+  --z-header: 20;
+  --z-sticky: 15;
+  --z-toast: 50;
+  --z-dialog: 60;
+  --font-xs: 0.75rem;
+  --font-sm: 0.875rem;
+  --font-md: 1rem;
+  --font-lg: 1.25rem;
+  --font-xl: 1.75rem;
+  --font-2xl: 2rem;
+  font-family: 'Segoe UI', sans-serif;
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-bg: #111827;
+  --color-surface: #1b2535;
+  --color-surface-raised: #222f43;
+  --color-text: #f3f6fc;
+  --color-muted: #c1ccdc;
+  --color-border: #42516a;
+  --color-primary: #a9bcff;
+  --color-primary-strong: #c6d2ff;
+  --color-primary-soft: #25365e;
+  --color-success: #8ed4a8;
+  --color-success-soft: #183d2c;
+  --color-warning: #f0c777;
+  --color-warning-soft: #493919;
+  --color-danger: #ffaaaa;
+  --color-danger-soft: #4a252a;
+  --color-info: #a9d2ff;
+  --color-info-soft: #203b5a;
+  --color-focus: #bfd0ff;
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 28%);
+  --shadow-md: 0 12px 32px rgb(0 0 0 / 42%);
+}

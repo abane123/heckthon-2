@@ -1,0 +1,24 @@
+# .NET build outputs and IDE files
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+
+# Node, Vite, and local environment files
+node_modules/
+ui/dist/
+ui/.vite/
+ui/coverage/
+*.local
+.env
+.env.*
+!.env.example
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
