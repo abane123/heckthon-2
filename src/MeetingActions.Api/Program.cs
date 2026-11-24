@@ -28,7 +28,8 @@ builder.Services.AddSingleton<IMongoClient>(services =>
 {
     var options = services.GetRequiredService<IOptions<MongoOptions>>().Value;
     var settings = MongoClientSettings.FromConnectionString(options.ConnectionString);
-    settings.ServerSelectionTimeout = TimeSpan.FromSeconds(3);
+    // Keep unavailable persistence checks within the health endpoint's three-second response budget.
+    settings.ServerSelectionTimeout = TimeSpan.FromSeconds(2);
     return new MongoClient(settings);
 });
 builder.Services.AddSingleton<MongoContext>();
@@ -109,11 +110,10 @@ try
         .InitializeAsync(app.Lifetime.ApplicationStopping);
     await SeedData.InitializeAsync(
         scope.ServiceProvider.GetRequiredService<IDemoDataStore>(),
-        scope.ServiceProvider.GetRequiredService<ILlmExtractor>(),
         scope.ServiceProvider.GetRequiredService<IClock>(),
         app.Lifetime.ApplicationStopping);
 }
-catch (Exception exception) when (exception is MongoException or TimeoutException or LlmUnavailableException)
+catch (Exception exception) when (exception is MongoException or TimeoutException)
 {
     app.Logger.LogError(
         exception,

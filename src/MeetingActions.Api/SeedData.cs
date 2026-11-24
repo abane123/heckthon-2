@@ -1,16 +1,16 @@
 using MeetingActions.Core.Abstractions;
 using MeetingActions.Core.Domain;
 using MeetingActions.Core.Services;
+using MeetingActions.Infrastructure.Integrations;
 
 namespace MeetingActions.Api;
 
 /// <summary>Builds and stores the standard local demo data through persistence abstractions.</summary>
 public static class SeedData
 {
-    /// <summary>Seeds users and one sample meeting when the configured store is empty.</summary>
+    /// <summary>Seeds users and a sample meeting through the deterministic built-in extractor only.</summary>
     public static async Task InitializeAsync(
         IDemoDataStore demoDataStore,
-        ILlmExtractor extractor,
         IClock clock,
         CancellationToken cancellationToken = default)
     {
@@ -30,7 +30,8 @@ public static class SeedData
             Transcript = transcript,
             Attendees = attendees.ToList()
         };
-        var analysis = await extractor.ExtractAsync(
+        // Startup demo seeding must not warm, call, or wait for the configured external analysis provider.
+        var analysis = await new StubLlmExtractor().ExtractAsync(
             transcript, meeting.MeetingDate, attendees, cancellationToken, meeting.Title);
         meeting.Items = analysis.Items.ToList();
         meeting.Decisions = analysis.Decisions.ToList();

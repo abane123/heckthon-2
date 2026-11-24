@@ -62,6 +62,12 @@ extractor when the selected Ollama service is unavailable.
 
 If MongoDB is unreachable, the API still starts, logs the database initialization failure, and reports a degraded state from `/api/health`. Database-dependent endpoints return a 503 ProblemDetails response. Verify that your local MongoDB service is running and listening on port 27017; if you chose Compose, check `docker compose ps` and `docker compose logs mongo`.
 
+### Troubleshooting Ollama
+
+- Run `ollama list` to check installed models, and open `http://localhost:11434` to confirm the local Ollama service is reachable.
+- The first extraction after a model load can be slow, especially on CPU; allow time for the model to load. Startup seeding uses the deterministic Stub extractor and never waits for Ollama.
+- To use the built-in engine instead, set `$env:Llm__Provider = "Stub"` before starting the API.
+
 ## Run the UI
 
 In another terminal:

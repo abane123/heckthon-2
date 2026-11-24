@@ -99,7 +99,7 @@ describe('NewMeetingPage', () => {
     ).toBe(true))
   })
 
-  /** Leaves extraction available when unavailable Ollama has an explicit Stub fallback. */
+  /** Shows degraded Ollama details and keeps extraction available when Stub fallback is enabled. */
   it('allows extraction when Stub fallback is configured', async () => {
     server.use(http.get('*/api/llm/info', () => HttpResponse.json({
       provider: 'Ollama',
@@ -111,6 +111,7 @@ describe('NewMeetingPage', () => {
     })))
     renderPage()
 
+    expect(await screen.findByText('Analysis engine: Ollama llama3.1:8b')).toBeTruthy()
     expect(await screen.findByText(/Stub fallback is enabled/)).toBeTruthy()
     await waitFor(() => expect(
       (screen.getByRole('button', { name: 'Extract action items' }) as HTMLButtonElement).disabled,

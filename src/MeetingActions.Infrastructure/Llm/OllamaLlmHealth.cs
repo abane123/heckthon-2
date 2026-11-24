@@ -9,16 +9,19 @@ public sealed class OllamaLlmHealth(
     IHttpClientFactory httpClientFactory,
     IOptions<OllamaOptions> options) : ILlmHealth
 {
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(2);
+
     /// <summary>Queries Ollama's model tags endpoint and returns a degraded result on availability failures.</summary>
     public async Task<LlmHealthResult> CheckAsync(CancellationToken cancellationToken = default)
     {
         var settings = options.Value;
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(settings.RequestTimeoutSeconds));
+        // Health must not inherit the much longer extraction timeout or hold up API diagnostics.
+        using var timeout = new CancellationTokenSource(ProbeTimeout);
         using var linkedToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
-            using var response = await httpClientFactory.CreateClient(OllamaOptions.HttpClientName)
-                .GetAsync("api/tags", linkedToken.Token);
+            using var client = httpClientFactory.CreateClient(OllamaOptions.HttpClientName);
+            using var response = await client.GetAsync("api/tags", linkedToken.Token);
             if (!response.IsSuccessStatusCode)
             {
                 return new LlmHealthResult(
@@ -50,7 +53,11 @@ public sealed class OllamaLlmHealth(
         }
         catch (OperationCanceledException)
         {
-            return new LlmHealthResult(false, false, settings.Model, "Ollama health check timed out.");
+            return new LlmHealthResult(
+                false,
+                false,
+                settings.Model,
+                $"Ollama health check timed out after {ProbeTimeout.TotalSeconds:0} seconds.");
         }
         catch (HttpRequestException)
         {

@@ -202,7 +202,9 @@ public sealed class OllamaExtractorTests
             new DateTime(2026, 11, 17),
             ["Priya"]);
 
-        await action.Should().ThrowAsync<LlmUnavailableException>().WithMessage("*timed out*");
+        var exception = await action.Should().ThrowAsync<LlmUnavailableException>();
+        exception.WithMessage("*timed out*");
+        exception.WithMessage("*first request can take a minute on CPU*");
     }
 
     /// <summary>Chunks at transcript lines and collapses the duplicated action in overlapping context.</summary>

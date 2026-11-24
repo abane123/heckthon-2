@@ -211,7 +211,8 @@ public sealed class OllamaExtractor(
             catch (OperationCanceledException exception)
             {
                 throw new LlmUnavailableException(
-                    $"Ollama request timed out after {settings.RequestTimeoutSeconds} seconds.",
+                    $"Ollama request timed out after {settings.RequestTimeoutSeconds} seconds. "
+                    + "The model may be loading; the first request can take a minute on CPU. Retry after it has loaded.",
                     exception);
             }
             catch (HttpRequestException exception)

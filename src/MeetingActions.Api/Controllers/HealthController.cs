@@ -18,9 +18,13 @@ public sealed class HealthController(
     [HttpGet]
     public async Task<ActionResult<object>> Get(CancellationToken cancellationToken)
     {
-        var available = await persistenceHealth.IsAvailableAsync(cancellationToken);
+        // Probe dependencies concurrently so their separate bounded timeouts do not add together.
+        var persistenceTask = persistenceHealth.IsAvailableAsync(cancellationToken);
+        var llmHealthTask = llmHealth.CheckAsync(cancellationToken);
+        await Task.WhenAll(persistenceTask, llmHealthTask);
+        var available = await persistenceTask;
         var provider = llmOptions.Value.Provider;
-        var modelHealth = await llmHealth.CheckAsync(cancellationToken);
+        var modelHealth = await llmHealthTask;
         var modelStatus = modelHealth.Reachable && modelHealth.ModelInstalled ? "Healthy" : "Degraded";
         var version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
         return available

@@ -129,6 +129,8 @@ public sealed class MongoPersistenceIntegrationTests(MongoDbFixture fixture) : I
         var firstApproval = client.PostAsync($"/api/items/{itemId}/approve", null);
         var secondApproval = client.PostAsync($"/api/items/{itemId}/approve", null);
         var responses = await Task.WhenAll(firstApproval, secondApproval);
+        using var firstResponse = responses[0];
+        using var secondResponse = responses[1];
 
         responses.Count(response => response.StatusCode == HttpStatusCode.OK).Should().Be(1);
         responses.Count(response => response.StatusCode == HttpStatusCode.Conflict).Should().Be(1);
@@ -190,7 +192,7 @@ public sealed class MongoPersistenceIntegrationTests(MongoDbFixture fixture) : I
     /// <summary>Lists all index names for one database collection.</summary>
     private static async Task<string[]> GetIndexNamesAsync(IMongoDatabase database, string collectionName)
     {
-        var indexes = await database.GetCollection<BsonDocument>(collectionName).Indexes.ListAsync();
+        using var indexes = await database.GetCollection<BsonDocument>(collectionName).Indexes.ListAsync();
         return (await indexes.ToListAsync()).Select(index => index["name"].AsString).ToArray();
     }
 
@@ -254,35 +256,56 @@ public sealed class MongoDbFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         MongoSerialization.Register();
-        _connectionString = Environment.GetEnvironmentVariable("MONGO_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(_connectionString))
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        try
         {
-            var skipReason = MongoFactAttribute.GetSkipReason();
-            if (skipReason is not null)
+            _connectionString = Environment.GetEnvironmentVariable("MONGO_TEST_CONNECTION");
+            if (string.IsNullOrWhiteSpace(_connectionString))
             {
-                throw new InvalidOperationException(skipReason);
+                var skipReason = MongoFactAttribute.GetSkipReason();
+                if (skipReason is not null)
+                {
+                    throw new InvalidOperationException(skipReason);
+                }
+
+                _container = new MongoDbBuilder("mongo:7").Build();
+                await _container.StartAsync(timeout.Token);
+                _connectionString = _container.GetConnectionString();
             }
 
-            _container = new MongoDbBuilder("mongo:7").Build();
-            await _container.StartAsync();
-            _connectionString = _container.GetConnectionString();
-        }
+            ValidateConnectionStringDatabase(_connectionString);
+            _databaseName = $"{TestDatabasePrefix}{Guid.NewGuid():N}";
+            if (!_databaseName.StartsWith(TestDatabasePrefix, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Refusing to use MongoDB database '{_databaseName}'; test database names must start with '{TestDatabasePrefix}'.");
+            }
 
-        ValidateConnectionStringDatabase(_connectionString);
-        _databaseName = $"{TestDatabasePrefix}{Guid.NewGuid():N}";
-        if (!_databaseName.StartsWith(TestDatabasePrefix, StringComparison.Ordinal))
+            var clientSettings = MongoClientSettings.FromConnectionString(_connectionString);
+            // Mongo integration tests should fail quickly rather than spending the driver's long default waiting for a server.
+            clientSettings.ServerSelectionTimeout = TimeSpan.FromSeconds(3);
+            clientSettings.ConnectTimeout = TimeSpan.FromSeconds(3);
+            _client = new MongoClient(clientSettings);
+            _context = new MongoContext(_client, Options.Create(new MongoOptions
+            {
+                ConnectionString = _connectionString,
+                DatabaseName = _databaseName
+            }));
+            await _context.PingAsync(timeout.Token);
+            await _context.EnsureIndexesAsync(timeout.Token);
+        }
+        catch (OperationCanceledException exception) when (timeout.IsCancellationRequested)
         {
+            await DisposeAfterInitializationFailureAsync();
+            throw new TimeoutException("MongoDB integration fixture initialization exceeded 60 seconds.", exception);
+        }
+        catch (MongoException exception)
+        {
+            await DisposeAfterInitializationFailureAsync();
             throw new InvalidOperationException(
-                $"Refusing to use MongoDB database '{_databaseName}'; test database names must start with '{TestDatabasePrefix}'.");
+                "MongoDB integration fixture could not connect within 3 seconds. Check MONGO_TEST_CONNECTION and the local server.",
+                exception);
         }
-
-        _client = new MongoClient(_connectionString);
-        _context = new MongoContext(_client, Options.Create(new MongoOptions
-        {
-            ConnectionString = _connectionString,
-            DatabaseName = _databaseName
-        }));
-        await _context.EnsureIndexesAsync();
     }
 
     /// <summary>Drops the throwaway database and always disposes its optional container.</summary>
@@ -292,11 +315,13 @@ public sealed class MongoDbFixture : IAsyncLifetime
         {
             if (_client is not null && _databaseName is not null)
             {
-                await _client.DropDatabaseAsync(_databaseName);
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await _client.DropDatabaseAsync(_databaseName, timeout.Token);
             }
         }
         finally
         {
+            _client?.Dispose();
             if (_container is not null)
             {
                 await _container.DisposeAsync();
@@ -316,6 +341,24 @@ public sealed class MongoDbFixture : IAsyncLifetime
         await testDatabase.ClearCollectionsAsync();
         await _context.EnsureIndexesAsync();
         return testDatabase;
+    }
+
+    /// <summary>Cleans up partially initialized fixture resources after a timeout or server failure.</summary>
+    private async Task DisposeAfterInitializationFailureAsync()
+    {
+        try
+        {
+            await DisposeAsync();
+        }
+        catch (MongoException)
+        {
+            // A disconnected server cannot drop the unique database; still release its client and container.
+            _client?.Dispose();
+            if (_container is not null)
+            {
+                await _container.DisposeAsync();
+            }
+        }
     }
 
     /// <summary>Validates any database path before creating a Mongo client or performing database operations.</summary>
@@ -370,8 +413,12 @@ public sealed class MongoTestDatabase(
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class MongoFactAttribute : FactAttribute
 {
-    /// <summary>Skips only when neither MONGO_TEST_CONNECTION nor an available Docker daemon exists.</summary>
-    public MongoFactAttribute() => Skip = GetSkipReason();
+    /// <summary>Skips without a MongoDB source and bounds every Mongo integration test to one minute.</summary>
+    public MongoFactAttribute()
+    {
+        Timeout = 60_000;
+        Skip = GetSkipReason();
+    }
 
     /// <summary>Gets the skip message for an integration suite without a local server or Docker.</summary>
     internal static string? GetSkipReason()

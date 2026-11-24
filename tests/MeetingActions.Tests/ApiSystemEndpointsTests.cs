@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -71,6 +72,66 @@ public sealed class ApiSystemEndpointsTests
         infoDocument.RootElement.GetProperty("provider").GetString().Should().Be("Ollama");
         infoDocument.RootElement.GetProperty("status").GetString().Should().Be("Degraded");
         infoDocument.RootElement.GetProperty("message").GetString().Should().Contain("Is it running?");
+    }
+
+    /// <summary>Starts with Ollama selected and returns degraded health and info within the bounded probe timeout.</summary>
+    [Fact]
+    public async Task HostAndHealthEndpointsDoNotWaitForUnresponsiveOllama()
+    {
+        using var handler = new NeverRespondingOllamaHandler();
+        var health = new OllamaLlmHealth(
+            new NeverRespondingHttpClientFactory(handler),
+            Options.Create(new OllamaOptions
+            {
+                BaseUrl = "http://localhost:11434",
+                RequestTimeoutSeconds = 180
+            }));
+        using var factory = TestApiFactory.Create(
+            new InMemoryRepositoryStore(),
+            extractor: new NeverCallLlmExtractor(),
+            llmProvider: "Ollama",
+            llmHealth: health);
+        var startupTimer = Stopwatch.StartNew();
+        using var client = factory.CreateClient();
+        startupTimer.Stop();
+        startupTimer.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
+
+        var healthTimer = Stopwatch.StartNew();
+        var healthResponse = await client.GetAsync("/api/health");
+        healthTimer.Stop();
+        healthTimer.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
+        using var healthDocument = JsonDocument.Parse(await healthResponse.Content.ReadAsStringAsync());
+        healthDocument.RootElement.GetProperty("llm").GetProperty("status").GetString().Should().Be("Degraded");
+
+        var infoTimer = Stopwatch.StartNew();
+        var infoResponse = await client.GetAsync("/api/llm/info");
+        infoTimer.Stop();
+        infoTimer.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
+        using var infoDocument = JsonDocument.Parse(await infoResponse.Content.ReadAsStringAsync());
+        infoDocument.RootElement.GetProperty("status").GetString().Should().Be("Degraded");
+        infoDocument.RootElement.GetProperty("message").GetString().Should().Contain("timed out");
+        handler.RequestCount.Should().Be(2);
+        handler.Paths.Should().OnlyContain(path => path == "/api/tags");
+    }
+
+    /// <summary>Seeds the development store with Ollama selected without invoking an unreachable LLM extractor.</summary>
+    [Fact]
+    public async Task StartupSeedingUsesDeterministicExtractorWhenOllamaIsConfigured()
+    {
+        var store = new InMemoryRepositoryStore();
+        using var factory = TestApiFactory.Create(
+            store,
+            extractor: new NeverCallLlmExtractor(),
+            llmProvider: "Ollama",
+            llmHealth: new FakeLlmHealth(
+                new LlmHealthResult(false, false, "llama3.1:8b", "Cannot reach Ollama.")));
+        using var client = factory.CreateClient();
+
+        var meetings = await store.GetMeetingsAsync();
+
+        meetings.Should().ContainSingle();
+        meetings[0].Items.Should().NotBeEmpty();
+        meetings[0].Analysis!.Provider.Should().Be("Stub");
     }
 
     /// <summary>Returns fallback analysis metadata when Ollama is unavailable and fallback is enabled.</summary>
@@ -291,6 +352,73 @@ public sealed class ApiSystemEndpointsTests
                 5,
                 1,
                 ["Ollama prompt may have been truncated."]));
+    }
+
+    /// <summary>Fails if startup seeding or a health endpoint attempts transcript extraction.</summary>
+    private sealed class NeverCallLlmExtractor : ILlmExtractor
+    {
+        /// <summary>Fails immediately because this extractor must never be needed during startup.</summary>
+        public Task<AnalysisResult> ExtractAsync(
+            string transcript,
+            DateTime meetingDate,
+            IReadOnlyList<string> attendees,
+            CancellationToken cancellationToken = default,
+            string meetingTitle = "") =>
+            Task.FromException<AnalysisResult>(
+                new InvalidOperationException("Startup unexpectedly invoked the configured LLM extractor."));
+    }
+
+    /// <summary>Provides an Ollama health client factory backed by a deliberately non-responding handler.</summary>
+    private sealed class NeverRespondingHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        /// <summary>Creates a client that sends its requests through the fake Ollama handler.</summary>
+        public HttpClient CreateClient(string name)
+        {
+            _ = name;
+            return new HttpClient(handler, disposeHandler: false)
+            {
+                BaseAddress = new Uri("http://localhost:11434"),
+                Timeout = Timeout.InfiniteTimeSpan
+            };
+        }
+    }
+
+    /// <summary>Records tags probes and waits until the caller's health timeout cancels them.</summary>
+    private sealed class NeverRespondingOllamaHandler : HttpMessageHandler
+    {
+        private readonly List<string> _paths = [];
+        private readonly object _gate = new();
+        private int _requestCount;
+
+        /// <summary>Gets the number of Ollama requests made by the health check.</summary>
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        /// <summary>Gets a snapshot of requested Ollama resource paths.</summary>
+        public IReadOnlyList<string> Paths
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _paths.ToArray();
+                }
+            }
+        }
+
+        /// <summary>Never returns a response and exits only when the health probe cancels its request.</summary>
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _requestCount);
+            lock (_gate)
+            {
+                _paths.Add(request.RequestUri!.AbsolutePath);
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The non-responding handler should only exit by cancellation.");
+        }
     }
 
     /// <summary>Provides a fixed LLM health result for endpoint tests.</summary>
