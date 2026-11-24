@@ -2,7 +2,11 @@ import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, EmptyState, ErrorState, Skeleton, StatCard } from '../components/DesignSystem'
 import { useActionItems, useDashboard, useMeetings, useNextAgenda } from '../hooks'
+import type { ActionStatus } from '../types'
 import { formatDate, formatPercent } from '../utils/format'
+
+/** Lists the statuses included in open-work totals and owner workload charts. */
+const openWorkStatuses: ActionStatus[] = ['Approved', 'Created', 'InProgress', 'Overdue', 'Escalated']
 
 /** Summarizes follow-up metrics, owner workloads, and the next meeting agenda. */
 export default function DashboardPage() {
@@ -14,7 +18,7 @@ export default function DashboardPage() {
   const agendaQuery = useNextAgenda(latestMeeting?.id ?? '')
   const items = itemsQuery.data ?? []
   const dashboard = dashboardQuery.data
-  const openCount = items.filter((item) => !['Done', 'Rejected'].includes(item.status)).length
+  const openCount = items.filter((item) => openWorkStatuses.includes(item.status)).length
   const escalatedCount = items.filter((item) => item.status === 'Escalated').length
   const ownerCounts = Object.entries(dashboard?.openItemsPerOwner ?? {}).sort((first, second) => second[1] - first[1])
   const isLoading = dashboardQuery.isLoading || itemsQuery.isLoading || meetingsQuery.isLoading
@@ -40,9 +44,12 @@ export default function DashboardPage() {
       )}
       {!isLoading && !error && dashboard && items.length > 0 && <>
         <div className="dashboard-stat-grid">
-          <StatCard label="On-time rate" value={formatPercent(dashboard.onTimeRate)} explanation="Completed items with no recorded slips divided by all completed items." />
-          <StatCard label="Slip rate" value={formatPercent(dashboard.slipRate)} explanation="Items with one or more slips divided by all action items." />
-          <StatCard label="Open items" value={openCount.toLocaleString('en-GB')} explanation="Items not marked Done or Rejected." />
+          <StatCard label="On-time rate" value={dashboard.onTimeRate === null ? 'No data yet' : formatPercent(dashboard.onTimeRate)}
+            explanation="Completed items with no recorded slips divided by all completed items." />
+          <StatCard label="Slip rate" value={dashboard.slipRate === null ? 'No data yet' : formatPercent(dashboard.slipRate)}
+            explanation="Due items with one or more recorded slips divided by all items with a due date." />
+          <StatCard label="Open items" value={openCount.toLocaleString('en-GB')}
+            explanation="Approved, ticket-created, in-progress, overdue, or escalated items. Draft, rejected, and completed items are excluded." />
           <StatCard label="Escalated items" value={escalatedCount.toLocaleString('en-GB')} explanation="Open items whose workflow status is Escalated." />
         </div>
         <div className="dashboard-content-grid">

@@ -1,0 +1,19 @@
+{
+  "id": "01-release-readiness",
+  "language": "English",
+  "meetingDate": "2026-11-17",
+  "attendees": ["Priya", "Alex", "Jordan"],
+  "transcript": "[00:12] The release plan is mostly fine, though the alert details are still fuzzy.\n[01:08] Someone should check the dashboard colors, but we have not assigned it.\n[02:16] Priya, can you review the rollback checklist by Friday?\n[03:40] Alex will send support the rollout notes by tomorrow.\n[04:55] Maybe we should change the release window.",
+  "expectedItems": [
+    {
+      "owner": "Priya",
+      "dueDateText": "by Friday",
+      "quote": "Priya, can you review the rollback checklist by Friday?"
+    },
+    {
+      "owner": "Alex",
+      "dueDateText": "by tomorrow",
+      "quote": "Alex will send support the rollout notes by tomorrow."
+    }
+  ]
+}

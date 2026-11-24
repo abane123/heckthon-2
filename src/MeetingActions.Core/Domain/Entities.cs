@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using MeetingActions.Core.Services;
 
 namespace MeetingActions.Core.Domain;
 
@@ -17,6 +18,12 @@ public sealed class Meeting
     public List<string> Attendees { get; set; } = [];
     /// <summary>Gets or sets the meeting action items.</summary>
     public List<ActionItem> Items { get; set; } = [];
+    /// <summary>Gets or sets decisions separated from action items during extraction.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? Decisions { get; set; }
+    /// <summary>Gets or sets optional analysis details returned for the meeting.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MeetingAnalysisMetadata? Analysis { get; set; }
 }
 
 /// <summary>Represents an extracted action requiring review or follow-up.</summary>
@@ -35,6 +42,8 @@ public sealed class ActionItem
     public Guid? OwnerId { get; set; }
     /// <summary>Gets or sets the owner's display name.</summary>
     public string? OwnerName { get; set; }
+    /// <summary>Gets or sets a named speaker who is not yet a meeting attendee.</summary>
+    public string? SuggestedOwnerName { get; set; }
     /// <summary>Gets or sets the due date when known.</summary>
     public DateTime? DueDate { get; set; }
     /// <summary>Gets or sets the due date wording from the transcript.</summary>
@@ -53,6 +62,9 @@ public sealed class ActionItem
     public string? ExternalTicketId { get; set; }
     /// <summary>Gets or sets the number of deadline slips.</summary>
     public int SlipCount { get; set; }
+    /// <summary>Gets or sets the optimistic concurrency version; this is persistence metadata, not API data.</summary>
+    [JsonIgnore]
+    public int Version { get; set; }
 }
 
 /// <summary>Represents a person who can own action items.</summary>

@@ -40,6 +40,14 @@ describe('NewMeetingPage', () => {
 
   beforeEach(() => {
     sessionStorage.clear()
+    server.use(http.get('*/api/llm/info', () => HttpResponse.json({
+      provider: 'Stub',
+      model: 'Built-in rules',
+      status: 'Healthy',
+      message: 'Using the built-in rules engine; no external model is required.',
+      fallbackToStub: false,
+      maxTranscriptCharsPerChunk: 12000,
+    })))
   })
 
   afterEach(() => {
@@ -70,6 +78,72 @@ describe('NewMeetingPage', () => {
     const transcript = screen.getByRole('textbox', { name: 'Transcript' })
     expect(await screen.findByText('Paste or upload a transcript.')).toBeTruthy()
     expect(document.activeElement).toBe(transcript)
+  })
+
+  /** Shows the configured engine and disables extraction when Ollama is unavailable without fallback. */
+  it('shows the active Ollama engine and unavailable warning when fallback is off', async () => {
+    server.use(http.get('*/api/llm/info', () => HttpResponse.json({
+      provider: 'Ollama',
+      model: 'llama3.1:8b',
+      status: 'Degraded',
+      message: "Model not installed: run 'ollama pull llama3.1:8b'",
+      fallbackToStub: false,
+      maxTranscriptCharsPerChunk: 12000,
+    })))
+    renderPage()
+
+    expect(await screen.findByText('Analysis engine: Ollama llama3.1:8b')).toBeTruthy()
+    expect(await screen.findByText(/Model not installed: run 'ollama pull llama3.1:8b'/)).toBeTruthy()
+    await waitFor(() => expect(
+      (screen.getByRole('button', { name: 'Extract action items' }) as HTMLButtonElement).disabled,
+    ).toBe(true))
+  })
+
+  /** Shows degraded Ollama details and keeps extraction available when Stub fallback is enabled. */
+  it('allows extraction when Stub fallback is configured', async () => {
+    server.use(http.get('*/api/llm/info', () => HttpResponse.json({
+      provider: 'Ollama',
+      model: 'llama3.1:8b',
+      status: 'Degraded',
+      message: 'Cannot reach Ollama at http://localhost:11434. Is it running?',
+      fallbackToStub: true,
+      maxTranscriptCharsPerChunk: 12000,
+    })))
+    renderPage()
+
+    expect(await screen.findByText('Analysis engine: Ollama llama3.1:8b')).toBeTruthy()
+    expect(await screen.findByText(/Stub fallback is enabled/)).toBeTruthy()
+    await waitFor(() => expect(
+      (screen.getByRole('button', { name: 'Extract action items' }) as HTMLButtonElement).disabled,
+    ).toBe(false))
+  })
+
+  /** Displays part-by-part progress while a multi-chunk Ollama request remains pending. */
+  it('shows chunk-aware analysis progress for a long transcript', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.get('*/api/llm/info', () => HttpResponse.json({
+        provider: 'Ollama',
+        model: 'llama3.1:8b',
+        status: 'Healthy',
+        message: 'Ollama is ready.',
+        fallbackToStub: false,
+        maxTranscriptCharsPerChunk: 20,
+      })),
+      http.post('*/api/meetings', async ({ request }) => {
+        await new Promise<void>((resolve) => request.signal.addEventListener('abort', () => resolve(), { once: true }))
+        return HttpResponse.json({ id: 'meeting-1' }, { status: 201 })
+      }),
+    )
+    renderPage()
+    await user.type(screen.getByRole('textbox', { name: /Meeting title/ }), 'Long transcript')
+    await user.type(screen.getByRole('textbox', { name: 'Attendees' }), 'Priya{enter}')
+    await user.type(screen.getByRole('textbox', { name: 'Transcript' }), 'This transcript line is long enough to split into three chunks.')
+    await user.click(screen.getByRole('button', { name: 'Extract action items' }))
+
+    expect(await screen.findByText('Analysing part 2 of 4', {}, { timeout: 5000 })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Cancel extraction' }))
+    expect(await screen.findByText('Extraction cancelled. Your draft is still saved.')).toBeTruthy()
   })
 
   /** Rejects an unsupported extension and files larger than one mebibyte. */

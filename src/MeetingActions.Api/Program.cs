@@ -4,27 +4,46 @@ using Hangfire.MemoryStorage;
 using MeetingActions.Api;
 using MeetingActions.Core.Abstractions;
 using MeetingActions.Core.Domain;
+using MeetingActions.Infrastructure;
 using MeetingActions.Infrastructure.Integrations;
+using MeetingActions.Infrastructure.Llm;
 using MeetingActions.Infrastructure.Persistence;
 using MeetingActions.Jobs;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using MongoDB.Driver;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var provider = builder.Configuration["Persistence:Provider"] ?? "Sqlite";
-if (!string.Equals(provider, "Sqlite", StringComparison.OrdinalIgnoreCase))
+MongoSerialization.Register();
+builder.Services.AddOptions<MongoOptions>()
+    .Bind(builder.Configuration.GetSection(MongoOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.ConnectionString)
+        && IsValidMongoConnectionString(options.ConnectionString),
+        "MongoDB:ConnectionString must be a valid MongoDB connection string.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.DatabaseName),
+        "MongoDB:DatabaseName is required.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IMongoClient>(services =>
 {
-    throw new NotSupportedException($"Persistence provider '{provider}' is not installed. Add its EF Core provider and configure it here.");
-}
-
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required.");
-builder.Services.AddDbContext<MeetingActionsDbContext>(options => options.UseSqlite(connectionString));
-builder.Services.AddScoped<IMeetingRepository, MeetingRepository>();
+    var options = services.GetRequiredService<IOptions<MongoOptions>>().Value;
+    var settings = MongoClientSettings.FromConnectionString(options.ConnectionString);
+    // Keep unavailable persistence checks within the health endpoint's three-second response budget.
+    settings.ServerSelectionTimeout = TimeSpan.FromSeconds(2);
+    return new MongoClient(settings);
+});
+builder.Services.AddSingleton<MongoContext>();
+builder.Services.AddSingleton<IMongoDatabaseInitializer, MongoDatabaseInitializer>();
+builder.Services.AddScoped<IMeetingRepository, MongoMeetingRepository>();
+builder.Services.AddScoped<IActionItemRepository, MongoActionItemRepository>();
+builder.Services.AddScoped<IUserRepository, MongoUserRepository>();
+builder.Services.AddScoped<IFollowUpRepository, MongoFollowUpRepository>();
+builder.Services.AddScoped<IAuditEventRepository, MongoAuditEventRepository>();
+builder.Services.AddScoped<IDemoDataStore, MongoDemoDataStore>();
+builder.Services.AddScoped<IPersistenceHealthCheck, MongoPersistenceHealthCheck>();
 builder.Services.AddScoped<ActionItemStateMachine>();
 builder.Services.AddScoped<FollowUpService>();
-builder.Services.AddTransient<ILlmExtractor, StubLlmExtractor>();
+builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.Configure<AzureOpenAiOptions>(builder.Configuration.GetSection("AzureOpenAI"));
 builder.Services.AddTransient<AzureOpenAiExtractor>();
 builder.Services.Configure<AzureDevOpsOptions>(builder.Configuration.GetSection("AzureDevOps"));
@@ -78,11 +97,27 @@ builder.Services.AddHangfireServer();
 
 var app = builder.Build();
 
-await using (var scope = app.Services.CreateAsyncScope())
+var llmSettings = app.Services.GetRequiredService<IOptions<LlmOptions>>().Value;
+var activeModel = llmSettings.Provider.Equals("Ollama", StringComparison.OrdinalIgnoreCase)
+    ? app.Services.GetRequiredService<IOptions<OllamaOptions>>().Value.Model
+    : "Built-in rules";
+app.Logger.LogInformation("LLM provider {Provider} selected with model {Model}.", llmSettings.Provider, activeModel);
+
+try
 {
-    var dbContext = scope.ServiceProvider.GetRequiredService<MeetingActionsDbContext>();
-    await dbContext.Database.MigrateAsync();
-    await SeedData.InitializeAsync(scope.ServiceProvider, app.Lifetime.ApplicationStopping);
+    await using var scope = app.Services.CreateAsyncScope();
+    await scope.ServiceProvider.GetRequiredService<IMongoDatabaseInitializer>()
+        .InitializeAsync(app.Lifetime.ApplicationStopping);
+    await SeedData.InitializeAsync(
+        scope.ServiceProvider.GetRequiredService<IDemoDataStore>(),
+        scope.ServiceProvider.GetRequiredService<IClock>(),
+        app.Lifetime.ApplicationStopping);
+}
+catch (Exception exception) when (exception is MongoException or TimeoutException)
+{
+    app.Logger.LogError(
+        exception,
+        "Startup seeding could not reach a configured dependency; the API will start with the available services.");
 }
 
 app.Lifetime.ApplicationStarted.Register(() => RecurringJob.AddOrUpdate<FollowUpService>(
@@ -100,6 +135,24 @@ app.UseCors("meeting-actions-ui");
 app.UseExceptionHandler();
 app.MapControllers();
 app.Run();
+
+/// <summary>Checks that configured database endpoints use a syntactically valid MongoDB URI.</summary>
+static bool IsValidMongoConnectionString(string connectionString)
+{
+    try
+    {
+        _ = MongoUrl.Create(connectionString);
+        return true;
+    }
+    catch (MongoConfigurationException)
+    {
+        return false;
+    }
+    catch (ArgumentException)
+    {
+        return false;
+    }
+}
 
 /// <summary>Exposes the top-level API entry point to integration tests.</summary>
 public partial class Program { }

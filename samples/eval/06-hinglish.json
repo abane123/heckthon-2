@@ -1,0 +1,19 @@
+{
+  "id": "06-hinglish",
+  "language": "Hinglish",
+  "meetingDate": "2026-11-24",
+  "attendees": ["Rahul Sharma", "Asha Mehta"],
+  "transcript": "[00:20] Rahul Sharma: Um, main main report kal tak bhej dunga.\n[01:10] Asha ji, aap please dashboard ka chart aaj update kar dena.\n[02:00] Koi isko dekhna chahiye, shayad next week.",
+  "expectedItems": [
+    {
+      "owner": "Rahul Sharma",
+      "dueDateText": "kal tak",
+      "quote": "main main report kal tak bhej dunga."
+    },
+    {
+      "owner": "Asha Mehta",
+      "dueDateText": "aaj",
+      "quote": "Asha ji, aap please dashboard ka chart aaj update kar dena."
+    }
+  ]
+}

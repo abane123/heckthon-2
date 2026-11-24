@@ -1,0 +1,19 @@
+{
+  "id": "02-interrupted-handoff",
+  "language": "English",
+  "meetingDate": "2026-11-18",
+  "attendees": ["Mina", "Jordan"],
+  "transcript": "[00:25] Mina will prepare the migration checklist by 2026-11-25.\n[01:10] Jordan, can you confirm the rollback owner by Friday? Sorry, the audio cut out.\n[02:04] We said the support guide might be useful, but it is not committed.\n[03:30] The build was green yesterday.\n[04:02] Sorry, Jordan, you were saying?",
+  "expectedItems": [
+    {
+      "owner": "Mina",
+      "dueDateText": "by 2026-11-25",
+      "quote": "Mina will prepare the migration checklist by 2026-11-25."
+    },
+    {
+      "owner": "Jordan",
+      "dueDateText": "by Friday",
+      "quote": "Jordan, can you confirm the rollback owner by Friday? Sorry, the audio cut out."
+    }
+  ]
+}

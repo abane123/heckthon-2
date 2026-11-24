@@ -1,0 +1,19 @@
+{
+  "id": "03-first-person",
+  "language": "English",
+  "meetingDate": "2026-11-19",
+  "attendees": ["Alex", "Rae"],
+  "transcript": "[00:18] I can draft the incident summary by tomorrow.\n[01:44] Rae, can you check the paging rotation before the release?\n[02:32] Maybe the dashboard should show fewer charts.\n[03:15] Someone should ask the vendor about the delay.",
+  "expectedItems": [
+    {
+      "owner": null,
+      "dueDateText": "by tomorrow",
+      "quote": "I can draft the incident summary by tomorrow."
+    },
+    {
+      "owner": "Rae",
+      "dueDateText": "before the release",
+      "quote": "Rae, can you check the paging rotation before the release?"
+    }
+  ]
+}

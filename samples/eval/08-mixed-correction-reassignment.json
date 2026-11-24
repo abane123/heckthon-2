@@ -1,0 +1,14 @@
+{
+  "id": "08-mixed-correction-reassignment",
+  "language": "Mixed English/Hinglish",
+  "meetingDate": "2026-11-26",
+  "attendees": ["Alex Kim", "Jordan Lee"],
+  "transcript": "[07:20] Alex Kim: Um, Jordan, can can you send the summary by Friday, no wait, Monday?\n[07:35] Alex Kim: Actually Jordan, you take the summary instead, by Monday. Haan, um.\n[08:10] Maybe kisi ko alert check karna chahiye.",
+  "expectedItems": [
+    {
+      "owner": "Jordan Lee",
+      "dueDateText": "by Monday",
+      "quote": "Actually Jordan, you take the summary instead, by Monday."
+    }
+  ]
+}

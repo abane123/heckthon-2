@@ -1,9 +1,7 @@
 using MeetingActions.Api.Contracts;
 using MeetingActions.Core.Abstractions;
 using MeetingActions.Core.Domain;
-using MeetingActions.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace MeetingActions.Api.Controllers;
 
@@ -11,8 +9,10 @@ namespace MeetingActions.Api.Controllers;
 [ApiController]
 [Route("api/items")]
 public sealed class ItemsController(
-    IMeetingRepository repository,
-    MeetingActionsDbContext dbContext,
+    IActionItemRepository actionItemRepository,
+    IUserRepository userRepository,
+    IFollowUpRepository followUpRepository,
+    IAuditEventRepository auditEventRepository,
     ActionItemStateMachine stateMachine,
     IClock clock,
     ITaskProvider taskProvider) : ControllerBase
@@ -21,7 +21,7 @@ public sealed class ItemsController(
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<ActionItem>> Update(Guid id, UpdateActionItemRequest request, CancellationToken cancellationToken)
     {
-        var item = await repository.GetItemAsync(id, cancellationToken);
+        var item = await actionItemRepository.GetItemAsync(id, cancellationToken);
         if (item is null)
         {
             return NotFound();
@@ -34,11 +34,15 @@ public sealed class ItemsController(
 
         item.Title = request.Title.Trim();
         item.OwnerName = request.OwnerName?.Trim();
-        item.OwnerId = item.OwnerName is null ? null : await dbContext.Users
-            .Where(user => user.Name == item.OwnerName).Select(user => (Guid?)user.Id).FirstOrDefaultAsync(cancellationToken);
+        item.OwnerId = item.OwnerName is null
+            ? null
+            : (await userRepository.GetByNameAsync(item.OwnerName, cancellationToken))?.Id;
+        item.SuggestedOwnerName = null;
         item.DueDate = request.DueDate;
-        item.NeedsInput.Remove("Owner");
-        item.NeedsInput.Remove("Due date");
+        item.NeedsInput.RemoveAll(value =>
+            value.Equals("owner", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("due date", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("speaker unknown", StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(item.OwnerName))
         {
             item.NeedsInput.Add("Owner");
@@ -49,8 +53,13 @@ public sealed class ItemsController(
             item.NeedsInput.Add("Due date");
         }
 
-        AddAudit(item, "Draft edited", "Organizer");
-        await repository.SaveChangesAsync(cancellationToken);
+        var expectedVersion = item.Version;
+        if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+        {
+            return ConcurrencyConflict();
+        }
+
+        await AddAuditAsync(item, "Draft edited", "Organizer", cancellationToken);
         return Ok(item);
     }
 
@@ -58,23 +67,33 @@ public sealed class ItemsController(
     [HttpPost("{id:guid}/approve")]
     public async Task<ActionResult<ActionItem>> Approve(Guid id, CancellationToken cancellationToken)
     {
-        var item = await repository.GetItemAsync(id, cancellationToken);
+        var item = await actionItemRepository.GetItemAsync(id, cancellationToken);
         if (item is null)
         {
             return NotFound();
         }
 
+        if (item.Status == ActionStatus.Draft
+            && (string.IsNullOrWhiteSpace(item.OwnerName) || item.DueDate is null))
+        {
+            return MissingRequiredFieldsProblem(item);
+        }
+
         try
         {
+            var expectedVersion = item.Version;
             stateMachine.Transition(item, ActionStatus.Approved);
+            if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+            {
+                return ConcurrencyConflict();
+            }
         }
         catch (InvalidOperationException exception)
         {
             return Conflict(exception.Message);
         }
 
-        AddAudit(item, "Approved", "Organizer");
-        await repository.SaveChangesAsync(cancellationToken);
+        await AddAuditAsync(item, "Approved", "Organizer", cancellationToken);
         return Ok(item);
     }
 
@@ -82,7 +101,7 @@ public sealed class ItemsController(
     [HttpPost("{id:guid}/unapprove")]
     public async Task<ActionResult<ActionItem>> Unapprove(Guid id, CancellationToken cancellationToken)
     {
-        var item = await repository.GetItemAsync(id, cancellationToken);
+        var item = await actionItemRepository.GetItemAsync(id, cancellationToken);
         if (item is null)
         {
             return NotFound();
@@ -90,15 +109,19 @@ public sealed class ItemsController(
 
         try
         {
+            var expectedVersion = item.Version;
             stateMachine.Transition(item, ActionStatus.Draft);
+            if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+            {
+                return ConcurrencyConflict();
+            }
         }
         catch (InvalidOperationException exception)
         {
             return Conflict(exception.Message);
         }
 
-        AddAudit(item, "Approval undone", "Organizer");
-        await repository.SaveChangesAsync(cancellationToken);
+        await AddAuditAsync(item, "Approval undone", "Organizer", cancellationToken);
         return Ok(item);
     }
 
@@ -106,7 +129,7 @@ public sealed class ItemsController(
     [HttpPost("{id:guid}/reject")]
     public async Task<ActionResult<ActionItem>> Reject(Guid id, CancellationToken cancellationToken)
     {
-        var item = await repository.GetItemAsync(id, cancellationToken);
+        var item = await actionItemRepository.GetItemAsync(id, cancellationToken);
         if (item is null)
         {
             return NotFound();
@@ -114,15 +137,19 @@ public sealed class ItemsController(
 
         try
         {
+            var expectedVersion = item.Version;
             stateMachine.Transition(item, ActionStatus.Rejected);
+            if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+            {
+                return ConcurrencyConflict();
+            }
         }
         catch (InvalidOperationException exception)
         {
             return Conflict(exception.Message);
         }
 
-        AddAudit(item, "Rejected", "Organizer");
-        await repository.SaveChangesAsync(cancellationToken);
+        await AddAuditAsync(item, "Rejected", "Organizer", cancellationToken);
         return Ok(item);
     }
 
@@ -130,7 +157,7 @@ public sealed class ItemsController(
     [HttpPost("{id:guid}/restore")]
     public async Task<ActionResult<ActionItem>> Restore(Guid id, CancellationToken cancellationToken)
     {
-        var item = await repository.GetItemAsync(id, cancellationToken);
+        var item = await actionItemRepository.GetItemAsync(id, cancellationToken);
         if (item is null)
         {
             return NotFound();
@@ -138,15 +165,19 @@ public sealed class ItemsController(
 
         try
         {
+            var expectedVersion = item.Version;
             stateMachine.Transition(item, ActionStatus.Draft);
+            if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+            {
+                return ConcurrencyConflict();
+            }
         }
         catch (InvalidOperationException exception)
         {
             return Conflict(exception.Message);
         }
 
-        AddAudit(item, "Reopened for review", "Organizer");
-        await repository.SaveChangesAsync(cancellationToken);
+        await AddAuditAsync(item, "Reopened for review", "Organizer", cancellationToken);
         return Ok(item);
     }
 
@@ -154,7 +185,7 @@ public sealed class ItemsController(
     [HttpPost("{id:guid}/reply")]
     public async Task<ActionResult<ActionItem>> Reply(Guid id, ActionReplyRequest request, CancellationToken cancellationToken)
     {
-        var item = await repository.GetItemAsync(id, cancellationToken);
+        var item = await actionItemRepository.GetItemAsync(id, cancellationToken);
         if (item is null)
         {
             return NotFound();
@@ -183,48 +214,95 @@ public sealed class ItemsController(
                 }
 
                 item.OwnerName = request.ReassignTo.Trim();
-                item.OwnerId = await dbContext.Users.Where(user => user.Name == item.OwnerName)
-                    .Select(user => (Guid?)user.Id).FirstOrDefaultAsync(cancellationToken);
+                item.OwnerId = (await userRepository.GetByNameAsync(item.OwnerName, cancellationToken))?.Id;
                 break;
             default:
                 return BadRequest("Action must be Done, PushToFriday, Blocked, or Reassign.");
         }
 
-        AddAudit(item, $"Owner reply: {request.Action}", item.OwnerName ?? "Owner");
-        dbContext.FollowUps.Add(new FollowUp
+        var expectedVersion = item.Version;
+        if (!await actionItemRepository.TryUpdateAsync(item, expectedVersion, cancellationToken))
+        {
+            return ConcurrencyConflict();
+        }
+
+        await AddAuditAsync(item, $"Owner reply: {request.Action}", item.OwnerName ?? "Owner", cancellationToken);
+        await followUpRepository.AddAsync(new FollowUp
         {
             ActionItemId = item.Id,
             SentAt = clock.UtcNow,
             Channel = "quick-reply",
             Response = request.Action
-        });
-        await repository.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
         return Ok(item);
     }
 
     /// <summary>Lists every action item for the tracker.</summary>
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<ActionItem>>> GetAll(CancellationToken cancellationToken) =>
-        Ok(await repository.GetAllItemsAsync(cancellationToken));
+        Ok(await actionItemRepository.GetAllItemsAsync(cancellationToken));
 
     /// <summary>Gets the audit trail for one action item.</summary>
     [HttpGet("{id:guid}/audit")]
     public async Task<ActionResult<IReadOnlyList<AuditEvent>>> GetAudit(Guid id, CancellationToken cancellationToken)
     {
-        if (await repository.GetItemAsync(id, cancellationToken) is null)
+        if (await actionItemRepository.GetItemAsync(id, cancellationToken) is null)
         {
             return NotFound();
         }
 
-        return Ok(await repository.GetAuditEventsAsync(id, cancellationToken));
+        return Ok(await auditEventRepository.GetByActionItemAsync(id, cancellationToken));
     }
 
-    private void AddAudit(ActionItem item, string eventType, string actor) =>
-        dbContext.AuditEvents.Add(new AuditEvent
+    /// <summary>Records an audit event after its corresponding item update succeeds.</summary>
+    private Task AddAuditAsync(
+        ActionItem item,
+        string eventType,
+        string actor,
+        CancellationToken cancellationToken) =>
+        auditEventRepository.AddAsync(new AuditEvent
         {
             ActionItemId = item.Id,
             EventType = eventType,
             Actor = actor,
             CreatedAt = clock.UtcNow
-        });
+        }, cancellationToken);
+
+    /// <summary>Builds a traceable conflict response when a versioned action update loses a race.</summary>
+    private ConflictObjectResult ConcurrencyConflict()
+    {
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status409Conflict,
+            Title = "The action item was changed by another request.",
+            Detail = "Reload the action item and retry the operation.",
+            Instance = HttpContext.Request.Path
+        };
+        problem.Extensions["traceId"] = HttpContext.TraceIdentifier;
+        return Conflict(problem);
+    }
+
+    /// <summary>Builds a traceable validation response for approval prerequisites that are missing.</summary>
+    private BadRequestObjectResult MissingRequiredFieldsProblem(ActionItem item)
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (string.IsNullOrWhiteSpace(item.OwnerName))
+        {
+            errors["ownerName"] = ["Missing owner"];
+        }
+
+        if (item.DueDate is null)
+        {
+            errors["dueDate"] = ["Missing due date"];
+        }
+
+        var problem = new ValidationProblemDetails(errors)
+        {
+            Status = StatusCodes.Status400BadRequest,
+            Title = "The action item is missing required fields.",
+            Instance = HttpContext.Request.Path
+        };
+        problem.Extensions["traceId"] = HttpContext.TraceIdentifier;
+        return BadRequest(problem);
+    }
 }

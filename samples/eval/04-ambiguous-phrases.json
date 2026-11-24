@@ -1,0 +1,19 @@
+{
+  "id": "04-ambiguous-phrases",
+  "language": "English",
+  "meetingDate": "2026-11-20",
+  "attendees": ["Sam", "Noor"],
+  "transcript": "[00:42] Sam will add the latency graph to the report by end of next week.\n[01:36] Noor, can you verify the staging alert by Friday?\n[02:50] The alert might be too noisy.\n[04:12] We said we would revisit the threshold, but nobody took it on.",
+  "expectedItems": [
+    {
+      "owner": "Sam",
+      "dueDateText": "by end of next week",
+      "quote": "Sam will add the latency graph to the report by end of next week."
+    },
+    {
+      "owner": "Noor",
+      "dueDateText": "by Friday",
+      "quote": "Noor, can you verify the staging alert by Friday?"
+    }
+  ]
+}

@@ -5,7 +5,9 @@ import type {
   ClockResponse,
   CreateMeetingInput,
   Dashboard,
+  DemoResetResponse,
   HealthResponse,
+  LlmInfo,
   Meeting,
   ProblemDetailsDto,
   SimulationResponse,
@@ -122,6 +124,10 @@ export const getMeetings = (signal?: AbortSignal) => request<Meeting[]>('/api/me
 export const getMeeting = (meetingId: string, signal?: AbortSignal) =>
   request<Meeting>(`/api/meetings/${meetingId}`, { signal })
 
+/** Adds an attendee and returns the meeting after draft owners are re-resolved. */
+export const addMeetingAttendee = (meetingId: string, name: string) =>
+  request<Meeting>(`/api/meetings/${meetingId}/attendees`, { method: 'POST', body: JSON.stringify({ name }) })
+
 /** Gets open actions from earlier meetings in the same title-based series. */
 export const getNextAgenda = (meetingId: string, signal?: AbortSignal) =>
   request<ActionItem[]>(`/api/meetings/${meetingId}/next-agenda`, { signal })
@@ -163,12 +169,18 @@ export const getDashboard = (signal?: AbortSignal) => request<Dashboard>('/api/d
 /** Gets API readiness and version information. */
 export const getHealth = (signal?: AbortSignal) => request<HealthResponse>('/api/health', { signal })
 
+/** Gets the selected analysis provider, model availability, and fallback configuration. */
+export const getLlmInfo = (signal?: AbortSignal) => request<LlmInfo>('/api/llm/info', { signal })
+
 /** Gets the current demo clock date. */
 export const getClock = (signal?: AbortSignal) => request<ClockResponse>('/api/dev/clock', { signal })
 
 /** Advances demo time and runs the follow-up pass. */
 export const simulateDays = (days: number) =>
   request<SimulationResponse>(`/api/dev/simulate-days?days=${days}`, { method: 'POST' })
+
+/** Replaces local development data with the standard follow-up demo scenario. */
+export const resetDemoData = () => request<DemoResetResponse>('/api/dev/reset', { method: 'POST' })
 
 /** Gets the audit history for an action item. */
 export const getAudit = (itemId: string, signal?: AbortSignal) =>

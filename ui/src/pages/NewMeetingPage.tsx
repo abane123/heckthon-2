@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Button, Card, ChipInput, ErrorState } from '../components/DesignSystem'
 import { createMeeting, getSampleTranscript } from '../api'
+import { useLlmInfo } from '../hooks'
 import type { CreateMeetingInput } from '../types'
 
 const draftStorageKey = 'meeting-actions-new-meeting-draft'
@@ -16,6 +17,7 @@ type FieldErrors = Partial<Record<keyof MeetingDraft, string>>
 /** Provides transcript entry, validation, draft recovery, and extraction submission. */
 export default function NewMeetingPage() {
   const navigate = useNavigate()
+  const llmInfoQuery = useLlmInfo()
   const titleRef = useRef<HTMLInputElement>(null)
   const dateRef = useRef<HTMLInputElement>(null)
   const transcriptRef = useRef<HTMLTextAreaElement>(null)
@@ -31,6 +33,14 @@ export default function NewMeetingPage() {
   const [restoreAvailable, setRestoreAvailable] = useState(() => Boolean(sessionStorage.getItem(draftStorageKey)))
   const [draggingFile, setDraggingFile] = useState(false)
   const [progressStep, setProgressStep] = useState(0)
+  const [progressPart, setProgressPart] = useState(1)
+  const llmInfo = llmInfoQuery.data
+  const ollamaSelected = llmInfo?.provider.toLowerCase() === 'ollama'
+  const ollamaUnavailable = Boolean(ollamaSelected && llmInfo?.status !== 'Healthy')
+  const extractionDisabled = ollamaUnavailable && !llmInfo?.fallbackToStub
+  const estimatedChunkCount = ollamaSelected
+    ? estimateTranscriptChunkCount(transcript, llmInfo?.maxTranscriptCharsPerChunk ?? 12000)
+    : 1
 
   const submit = useMutation({
     mutationFn: ({ input, signal }: { input: CreateMeetingInput; signal: AbortSignal }) => createMeeting(input, signal),
@@ -53,10 +63,16 @@ export default function NewMeetingPage() {
   useEffect(() => {
     if (!submit.isPending) return
     const timerId = window.setInterval(() => {
-      setProgressStep((current) => Math.min(current + 1, progressLabels.length - 1))
+      if (progressStep === 0) {
+        setProgressStep(1)
+      } else if (progressStep === 1 && progressPart < estimatedChunkCount) {
+        setProgressPart((current) => Math.min(current + 1, estimatedChunkCount))
+      } else {
+        setProgressStep(2)
+      }
     }, 850)
     return () => window.clearInterval(timerId)
-  }, [submit.isPending])
+  }, [estimatedChunkCount, progressPart, progressStep, submit.isPending])
 
   /** Marks the current form as edited and persists it for this browser session. */
   function markDraftChanged() {
@@ -149,6 +165,7 @@ export default function NewMeetingPage() {
     }
 
     setProgressStep(0)
+    setProgressPart(1)
     abortRef.current = new AbortController()
     submit.mutate({
       input: { title: title.trim(), date: new Date(`${date}T00:00:00`).toISOString(), attendees, transcript },
@@ -170,6 +187,10 @@ export default function NewMeetingPage() {
 
   const transcriptBytes = new TextEncoder().encode(transcript).byteLength
   const transcriptOverLimit = transcriptBytes > transcriptLimitBytes
+  const currentProgressLabels = progressLabels.map((label, index) =>
+    index === 1 && ollamaSelected && estimatedChunkCount > 1
+      ? `Analysing part ${Math.min(progressPart, estimatedChunkCount)} of ${estimatedChunkCount}`
+      : label)
 
   return (
     <section className="page">
@@ -250,7 +271,7 @@ export default function NewMeetingPage() {
               } : undefined} />}
             {submit.isPending && (
               <ol className="progress-stepper" aria-label="Transcript processing steps">
-                {progressLabels.map((label, index) => (
+                {currentProgressLabels.map((label, index) => (
                   <li key={label} className={index < progressStep ? 'step-done' : index === progressStep ? 'step-current' : ''}>
                     <span aria-hidden="true">{index < progressStep ? '✓' : index + 1}</span>{label}
                   </li>
@@ -259,8 +280,23 @@ export default function NewMeetingPage() {
             )}
             <div className="button-row">
               {submit.isPending && <Button type="button" variant="ghost" onClick={() => abortRef.current?.abort()}>Cancel extraction</Button>}
-              <Button type="submit" loading={submit.isPending}>Extract action items</Button>
+              <Button type="submit" loading={submit.isPending} disabled={extractionDisabled}>Extract action items</Button>
             </div>
+            <p className="analysis-engine" aria-live="polite">
+              Analysis engine: {llmInfoQuery.isLoading
+                ? 'Checking…'
+                : !llmInfo
+                  ? 'Unavailable'
+                  : ollamaSelected ? `Ollama ${llmInfo.model}` : 'Built-in rules'}
+            </p>
+            {ollamaUnavailable && llmInfo && (
+              <p className="llm-warning" role="status">
+                Ollama is unavailable. {llmInfo.message}{' '}
+                {llmInfo.fallbackToStub
+                  ? 'Stub fallback is enabled.'
+                  : 'Extract is disabled until Ollama is available or Stub fallback is enabled.'}
+              </p>
+            )}
           </form>
         </Card>
         <Card className="how-it-works">
@@ -281,4 +317,39 @@ export default function NewMeetingPage() {
       </div>
     </section>
   )
+}
+
+/** Estimates the server's speaker-line chunks so pending UI progress reflects multi-part analysis. */
+function estimateTranscriptChunkCount(transcript: string, maxCharacters: number): number {
+  const maxLength = Math.max(1, maxCharacters)
+  const lines = transcript.split(/\r\n|\r|\n/).filter((line) => line.length > 0)
+  if (lines.length === 0) return 1
+
+  let chunkCount = 0
+  let current: string[] = []
+  const joinedLength = (nextLine: string) => current.reduce((length, line) => length + line.length, 0)
+    + Math.max(0, current.length - 1) + (current.length === 0 ? 0 : 1) + nextLine.length
+
+  for (const line of lines) {
+    if (line.length > maxLength) {
+      if (current.length > 0) {
+        chunkCount += 1
+        current = []
+      }
+      chunkCount += Math.ceil(line.length / maxLength)
+      continue
+    }
+
+    if (joinedLength(line) > maxLength) {
+      chunkCount += 1
+      current = current.slice(-2)
+      while (current.length > 0 && joinedLength(line) > maxLength) {
+        current.shift()
+      }
+    }
+    current.push(line)
+  }
+
+  if (current.length > 0) chunkCount += 1
+  return Math.max(1, chunkCount)
 }

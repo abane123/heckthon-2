@@ -17,5 +17,7 @@ export const queryKeys = {
   dashboard: ['dashboard'] as const,
   /** Keys for health and virtual-clock polling. */
   health: ['health'] as const,
+  /** Key for the selected transcript-analysis provider information. */
+  llmInfo: ['llm-info'] as const,
   clock: ['clock'] as const,
 }
